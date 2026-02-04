@@ -1,5 +1,10 @@
 .DS_Store
 node_modules/
+/node_modules/
+/dist/
+
+dist/
+/dist/
 doc/
 dist_desktop/
 build/
@@ -17,7 +22,5 @@ build_resources/*.p12
 .env.*
 *.log
 tmp/
-/node_modules/
-/dist/
 
-/*/dist
+

@@ -5,7 +5,7 @@ import { JobStore } from './job-store.js';
 import { ConfigStore } from './config-store.js';
 import { AiConfig, runAi, extractJson } from './ai.js';
 import { spawnCommand } from './runner.js';
-import { normalizeId } from './utils.js';
+import { normalizeId, parseCommand } from './utils.js';
 import { AgentSpec, CommandSpec, SkillSpec, McpServerConfig } from './types.js';
 import { ChildProcess } from 'child_process';
 import { pickAgent } from './selector.js';
@@ -672,13 +672,16 @@ function buildAiMeta(
 
 function ensureAiConfigured(ai: AiConfig) {
   const hasHttp = !!ai.http && !!ai.http.apiKey && !!ai.http.model;
-  if (!hasHttp) {
+  const hasCommand = Array.isArray(ai.command) && ai.command.length > 0;
+  if (!hasHttp && !hasCommand) {
     throw new Error('AI not configured. Set LLM command or API key/base_url/model.');
   }
 }
 
 function hasAiConfig(ai: AiConfig): boolean {
-  return !!ai.http && !!ai.http.apiKey && !!ai.http.model;
+  const hasHttp = !!ai.http && !!ai.http.apiKey && !!ai.http.model;
+  const hasCommand = Array.isArray(ai.command) && ai.command.length > 0;
+  return hasHttp || hasCommand;
 }
 
 function resolveAiConfig(
@@ -692,10 +695,12 @@ function resolveAiConfig(
   const current = configStore.getModelConfig();
   const baseUrl = current.baseUrl || 'https://api.openai.com/v1';
   const http = current.apiKey && current.model ? { apiKey: current.apiKey, baseUrl, model: current.model } : null;
+  const command = parseCommand(process.env.SUBAGENT_LLM_CMD);
   return {
     timeoutMs: runtime?.aiTimeoutMs ?? ai.timeoutMs,
     maxOutputBytes: runtime?.aiMaxOutputBytes ?? ai.maxOutputBytes,
     http,
+    command: Array.isArray(command) && command.length > 0 ? command : null,
   };
 }
 

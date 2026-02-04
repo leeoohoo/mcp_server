@@ -1,5 +1,6 @@
 import { spawn, ChildProcess } from 'child_process';
 import { CommandSpec, McpServerConfig } from './types.js';
+import { parseCommand } from './utils.js';
 
 export interface RunContext {
   task: string;
@@ -42,10 +43,11 @@ export interface CommandRun {
 }
 
 export function spawnCommand(spec: CommandSpec, context: RunContext, options: RunOptions = {}): CommandRun {
-  if (!Array.isArray(spec.exec) || spec.exec.length === 0 || !spec.exec[0]) {
+  const exec = resolveExec(spec.exec);
+  if (exec.length === 0 || !exec[0]) {
     throw new Error('Command spec is missing exec');
   }
-  const [command, ...args] = spec.exec;
+  const [command, ...args] = exec;
   const timeoutMs = typeof options.timeoutMs === 'number' ? options.timeoutMs : 120000;
   const maxOutputBytes = typeof options.maxOutputBytes === 'number' ? options.maxOutputBytes : 1024 * 1024;
 
@@ -150,6 +152,19 @@ export function spawnCommand(spec: CommandSpec, context: RunContext, options: Ru
   });
 
   return { child, startedAt, result };
+}
+
+function resolveExec(value: unknown): string[] {
+  if (Array.isArray(value)) {
+    return value.map((entry) => String(entry)).filter(Boolean);
+  }
+  if (typeof value === 'string') {
+    const parsed = parseCommand(value);
+    if (Array.isArray(parsed)) {
+      return parsed.map((entry) => String(entry)).filter(Boolean);
+    }
+  }
+  return [];
 }
 
 function summarizeMcpServer(server: McpServerConfig) {

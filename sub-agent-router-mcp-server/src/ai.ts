@@ -1,10 +1,11 @@
 import OpenAI from 'openai';
-import { RunResult } from './runner.js';
+import { RunResult, runCommandWithInput } from './runner.js';
 
 export interface AiConfig {
   timeoutMs: number;
   maxOutputBytes: number;
   http?: AiHttpConfig | null;
+  command?: string[] | null;
 }
 
 export interface AiRunInput {
@@ -21,6 +22,18 @@ export interface AiHttpConfig {
 }
 
 export async function runAi(config: AiConfig, input: AiRunInput): Promise<RunResult> {
+  if (config.command && config.command.length > 0) {
+    const prompt = buildPrompt(input);
+    return await runCommandWithInput(
+      config.command,
+      prompt,
+      input.meta ? input.meta : {},
+      {
+        timeoutMs: config.timeoutMs,
+        maxOutputBytes: config.maxOutputBytes,
+      }
+    );
+  }
   if (!config.http || !config.http.apiKey || !config.http.model) {
     throw new Error('AI command is not configured');
   }
@@ -138,6 +151,14 @@ function buildMessages(input: AiRunInput): Array<{ role: 'system' | 'user'; cont
     messages.push({ role: 'user', content: '' });
   }
   return messages;
+}
+
+function buildPrompt(input: AiRunInput): string {
+  if (input.prompt) return input.prompt;
+  const system = input.system ? `SYSTEM:\n${input.system}\n\n` : '';
+  const user = input.user ? `USER:\n${input.user}\n` : '';
+  const raw = `${system}${user}`.trim();
+  return raw || '';
 }
 
 function normalizeBaseUrl(baseUrl: string): string {

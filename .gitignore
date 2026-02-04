@@ -19,3 +19,5 @@ build_resources/*.p12
 tmp/
 /node_modules/
 /dist/
+
+/*/dist

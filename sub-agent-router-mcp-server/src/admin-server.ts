@@ -295,19 +295,33 @@ function renderPage() {
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/antd@5/dist/reset.css" />
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/antd@5/dist/antd.min.css" />
   <style>
-    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; margin: 24px; background: #f5f5f5; }
-    h1 { font-size: 20px; margin-bottom: 12px; }
-    nav { margin-bottom: 16px; }
-    nav button { margin-right: 8px; }
+    :root {
+      --bg: #f3f5f8;
+      --card: #fff;
+      --text: #1f2a44;
+      --muted: #6b7280;
+      --border: #dde2ea;
+      --primary: #1677ff;
+    }
+    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; margin: 0; background: var(--bg); color: var(--text); }
+    .page { max-width: 1200px; margin: 24px auto 40px; padding: 0 16px; }
+    .page-header { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-bottom: 12px; }
+    h1 { font-size: 20px; margin: 0; }
+    nav.tabs { display: flex; gap: 8px; margin: 12px 0 16px; }
+    .tab-btn { border: 1px solid var(--border); background: #eef2f7; color: #475569; border-radius: 8px; padding: 6px 14px; cursor: pointer; }
+    .tab-btn.is-active { background: var(--primary); border-color: var(--primary); color: #fff; }
     .tab { display: none; }
     .tab.active { display: block; }
-    label { display: block; margin: 12px 0 6px; font-weight: 600; }
-    textarea, input { width: 100%; max-width: 720px; }
+    .grid-2 { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; }
+    .grid-1 { display: grid; grid-template-columns: 1fr; gap: 16px; }
+    @media (max-width: 1000px) { .grid-2 { grid-template-columns: 1fr; } }
+    label { display: block; margin: 10px 0 6px; font-weight: 600; }
+    textarea, input, select { width: 100%; max-width: 100%; }
     button { margin-top: 8px; }
-    table { border-collapse: collapse; margin-top: 12px; width: 100%; }
+    table { border-collapse: collapse; margin-top: 12px; width: 100%; background: #fff; }
     td, th { border: 1px solid #eee; padding: 6px 8px; text-align: left; vertical-align: top; }
-    .row { margin-bottom: 16px; }
-    .muted { color: #666; font-size: 12px; }
+    .row { margin-bottom: 12px; }
+    .muted { color: var(--muted); font-size: 12px; }
     .badge { display: inline-block; padding: 2px 8px; border-radius: 6px; background: #f0f0f0; margin-right: 6px; }
     .missing { color: #b00020; }
     details { margin: 8px 0; }
@@ -317,12 +331,14 @@ function renderPage() {
     .message { margin: 10px 0 16px; padding: 6px 10px; border-radius: 4px; border: 1px solid transparent; }
     .message.error { background: #fff1f1; color: #b00020; border-color: #f0caca; }
     .message.success { background: #f1fff4; color: #0a6; border-color: #cde9d6; }
-    .card { background: #fff; padding: 16px; border-radius: 8px; box-shadow: 0 1px 2px rgba(0,0,0,0.06); }
+    .card { background: var(--card); padding: 16px; border-radius: 12px; box-shadow: 0 1px 2px rgba(0,0,0,0.04); border: 1px solid #e4e8f0; }
     .card + .card { margin-top: 16px; }
     .list { margin: 6px 0 0; padding-left: 18px; }
     .list li { margin: 4px 0; }
-    .section-title { font-weight: 600; margin-top: 8px; }
+    .section-title { font-weight: 600; margin-bottom: 6px; }
+    .table-wrap { width: 100%; overflow: auto; }
     .ant-btn { border-radius: 6px; }
+    .status-badge { display: inline-flex; align-items: center; padding: 4px 10px; border-radius: 999px; background: #e7f4ff; color: var(--primary); border: 1px solid #b6daff; font-size: 12px; }
     .modal { display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.35); align-items: center; justify-content: center; z-index: 1000; }
     .modal.active { display: flex; }
     .modal-content { width: min(900px, 92vw); max-height: 90vh; overflow: auto; }
@@ -334,209 +350,250 @@ function renderPage() {
   </style>
 </head>
 <body>
-  <h1>Sub-agent Router 配置</h1>
-
-  <nav>
-    <button class="ant-btn ant-btn-primary" data-tab="config">配置</button>
-    <button class="ant-btn" data-tab="model">模型</button>
-    <button class="ant-btn" data-tab="mcp">MCP</button>
-    <button class="ant-btn" data-tab="marketplace">Marketplace</button>
-  </nav>
-
-  <div id="message" class="message" style="display:none"></div>
-
-  <section id="tab-config" class="tab active">
-    <div class="card">
-    <div class="row">
-      <label>MCP Allow Prefixes (逗号分隔)</label>
-      <input id="allowPrefixes" class="ant-input" placeholder="mcp_task_manager_, mcp_filesystem_" />
-      <button id="saveAllow" class="ant-btn ant-btn-primary">保存</button>
-      <div class="muted">用于提示子代理允许使用的 MCP 前缀（运行时只做提示约束）。</div>
+  <div class="page">
+    <div class="page-header">
+      <div>
+        <h1>Sub-agent Router</h1>
+        <div class="muted">Admin UI</div>
+      </div>
+      <div class="status-badge">Local</div>
     </div>
 
-    <div class="row">
-      <label>Plugins Root（安装目录）</label>
-      <input id="pluginsRoot" class="ant-input" placeholder="/path/to/plugins" />
-      <div class="muted">子代理可用插件的安装目录（用于加载 agents/skills/commands）。</div>
-    </div>
+    <nav class="tabs">
+      <button class="tab-btn is-active" data-tab="model">模型</button>
+      <button class="tab-btn" data-tab="mcp">MCP</button>
+      <button class="tab-btn" data-tab="marketplace">Marketplace</button>
+    </nav>
 
-    <div class="row">
-      <label>Plugins Source Root（用于一键安装）</label>
-      <input id="pluginsSourceRoot" class="ant-input" placeholder="/path/to/source/subagents" />
-      <button id="saveSettings" class="ant-btn ant-btn-primary">保存</button>
-      <div class="muted">可指向本地完整 subagents 仓库，用于一键安装缺失插件。</div>
-    </div>
+    <div id="message" class="message" style="display:none"></div>
 
-    <div class="row">
-      <label>Marketplace 路径（只读）</label>
-      <input id="marketplacePathInput" class="ant-input" readonly />
-    </div>
-
-
-    <div class="row">
-      <label>Registry 路径（只读）</label>
-      <input id="registryPathInput" class="ant-input" readonly />
-    </div>
-
-    <div class="row">
-      <label>DB 路径（只读）</label>
-      <input id="dbPathInput" class="ant-input" readonly />
-    </div>
-
-    <div class="row">
-      <label>已保存的 Marketplace</label>
-      <table id="marketplaceStoreTable">
-        <thead><tr><th>名称</th><th>插件数</th><th>创建时间</th><th>启用</th><th>操作</th></tr></thead>
-        <tbody></tbody>
-      </table>
-    </div>
-    </div>
-  </section>
-
-  <section id="tab-model" class="tab">
-    <div class="card">
-      <div class="row">
-        <label>API Key</label>
-        <input id="modelApiKey" class="ant-input" type="password" placeholder="sk-..." />
-        <div class="muted">仅保存在本地数据库中，不会上传。</div>
-      </div>
-      <div class="row">
-        <label>Base URL</label>
-        <input id="modelBaseUrl" class="ant-input" placeholder="https://api.openai.com/v1" />
-      </div>
-      <div class="row">
-        <label>Model</label>
-        <input id="modelName" class="ant-input" placeholder="gpt-4o-mini / deepseek-chat / ..." />
-      </div>
-      <div class="row">
-        <label>AI Timeout (ms, 0=无限)</label>
-        <input id="aiTimeoutMs" class="ant-input" placeholder="180000" />
-      </div>
-      <div class="row">
-        <label>AI Max Output Bytes</label>
-        <input id="aiMaxOutputBytes" class="ant-input" placeholder="2097152" />
-      </div>
-      <div class="row">
-        <label>Command Timeout (ms, 0=无限)</label>
-        <input id="commandTimeoutMs" class="ant-input" placeholder="120000" />
-      </div>
-      <div class="row">
-        <label>Command Max Output Bytes</label>
-        <input id="commandMaxOutputBytes" class="ant-input" placeholder="1048576" />
-      </div>
-      <div class="row inline">
-        <button id="saveModel" class="ant-btn ant-btn-primary">保存模型配置</button>
-        <button id="saveRuntime" class="ant-btn">保存运行参数</button>
-      </div>
-    </div>
-  </section>
-
-  <section id="tab-mcp" class="tab">
-    <div class="card">
-      <div class="row">
-        <label>MCP Servers</label>
-        <div class="muted">配置子代理可用的 MCP 服务（name + 协议 + cmd + args）。</div>
-        <div class="inline">
-          <button id="mcpOpenModal" class="ant-btn ant-btn-primary">新增 MCP</button>
-        </div>
-        <table id="mcpTable">
-          <thead>
-            <tr><th>Name</th><th>协议</th><th>Target</th><th>配置</th><th>启用</th><th>操作</th></tr>
-          </thead>
-          <tbody></tbody>
-        </table>
-      </div>
-    </div>
-  </section>
-
-  <div id="mcpModal" class="modal">
-    <div class="modal-content card">
-      <div class="modal-header">
-        <h3 id="mcpModalTitle">新增 MCP</h3>
-        <button id="mcpCloseModal" class="ant-btn">关闭</button>
-      </div>
-      <div class="modal-body">
-        <div class="row">
-          <label>名称</label>
-          <input id="mcpName" class="ant-input" placeholder="filesystem / task / lsp" />
-        </div>
-        <div class="row">
-          <label>协议</label>
-          <select id="mcpTransport" class="ant-select">
-            <option value="stdio">stdio</option>
-            <option value="sse">sse</option>
-            <option value="http">http</option>
-          </select>
-          <span class="pill" id="mcpTransportHint">stdio</span>
-        </div>
-        <div id="mcpStdioFields">
+    <section id="tab-model" class="tab active">
+      <div class="grid-2">
+        <div class="card">
           <div class="row">
-            <label>Cmd</label>
-            <input id="mcpCommand" class="ant-input" placeholder="node /path/server.js" />
+            <div class="section-title">模型配置</div>
+            <label>API Key</label>
+            <input id="modelApiKey" class="ant-input" type="password" placeholder="sk-..." />
+            <div class="muted">仅保存在本地数据库中，不会上传。</div>
           </div>
           <div class="row">
-            <label>Args</label>
-            <textarea id="mcpArgs" class="ant-input" placeholder="--root /path/to/project&#10;--verbose"></textarea>
-          </div>
-        </div>
-        <div id="mcpHttpFields" style="display:none;">
-          <div class="row">
-            <label>Endpoint URL</label>
-            <input id="mcpEndpoint" class="ant-input" placeholder="http://127.0.0.1:8080/sse 或 http://127.0.0.1:8080/mcp" />
+            <label>Base URL</label>
+            <input id="modelBaseUrl" class="ant-input" placeholder="https://api.openai.com/v1" />
           </div>
           <div class="row">
-            <label>Headers (JSON)</label>
-            <textarea id="mcpHeaders" class="ant-input" placeholder='{"Authorization":"Bearer xxx"}'></textarea>
+            <label>Model</label>
+            <input id="modelName" class="ant-input" placeholder="gpt-4o-mini / deepseek-chat / ..." />
+          </div>
+          <div class="row inline">
+            <button id="saveModel" class="ant-btn ant-btn-primary">保存模型配置</button>
           </div>
         </div>
-        <div class="row">
-          <label><input type="checkbox" id="mcpEnabled" checked /> 启用</label>
+
+        <div class="card">
+          <div class="row">
+            <div class="section-title">运行参数</div>
+            <label>AI Timeout (ms, 0=无限)</label>
+            <input id="aiTimeoutMs" class="ant-input" placeholder="180000" />
+          </div>
+          <div class="row">
+            <label>AI Max Output Bytes</label>
+            <input id="aiMaxOutputBytes" class="ant-input" placeholder="2097152" />
+          </div>
+          <div class="row">
+            <label>Command Timeout (ms, 0=无限)</label>
+            <input id="commandTimeoutMs" class="ant-input" placeholder="120000" />
+          </div>
+          <div class="row">
+            <label>Command Max Output Bytes</label>
+            <input id="commandMaxOutputBytes" class="ant-input" placeholder="1048576" />
+          </div>
+          <div class="row inline">
+            <button id="saveRuntime" class="ant-btn">保存运行参数</button>
+          </div>
         </div>
-        <div class="row inline">
-          <button id="mcpSave" class="ant-btn ant-btn-primary">保存</button>
-          <button id="mcpClear" class="ant-btn">清空</button>
+      </div>
+    </section>
+
+    <section id="tab-mcp" class="tab">
+      <div class="grid-1">
+        <div class="card">
+          <div class="row">
+            <div class="section-title">MCP Allow Prefixes</div>
+            <label>前缀（逗号分隔）</label>
+            <input id="allowPrefixes" class="ant-input" placeholder="mcp_task_manager_, mcp_filesystem_" />
+            <div class="inline">
+              <button id="saveAllow" class="ant-btn ant-btn-primary">保存</button>
+            </div>
+            <div class="muted">用于提示子代理允许使用的 MCP 前缀（运行时只做提示约束）。</div>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="row">
+            <div class="section-title">MCP Servers</div>
+            <div class="muted">配置子代理可用的 MCP 服务（name + 协议 + cmd + args）。</div>
+            <div class="inline">
+              <button id="mcpOpenModal" class="ant-btn ant-btn-primary">新增 MCP</button>
+            </div>
+            <div class="table-wrap">
+              <table id="mcpTable">
+                <thead>
+                  <tr><th>Name</th><th>协议</th><th>Target</th><th>配置</th><th>启用</th><th>操作</th></tr>
+                </thead>
+                <tbody></tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section id="tab-marketplace" class="tab">
+      <div class="grid-2">
+        <div class="card">
+          <div class="row">
+            <div class="section-title">插件根目录</div>
+            <label>Plugins Root（安装目录）</label>
+            <input id="pluginsRoot" class="ant-input" placeholder="/path/to/plugins" />
+            <div class="muted">子代理可用插件的安装目录（用于加载 agents/skills/commands）。</div>
+          </div>
+          <div class="row">
+            <label>Plugins Source Root（用于一键安装）</label>
+            <input id="pluginsSourceRoot" class="ant-input" placeholder="/path/to/source/subagents" />
+            <div class="muted">可指向本地完整 subagents 仓库，用于一键安装缺失插件。</div>
+          </div>
+          <div class="row inline">
+            <button id="saveSettings" class="ant-btn ant-btn-primary">保存</button>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="row">
+            <div class="section-title">系统路径</div>
+            <label>Marketplace 路径（只读）</label>
+            <input id="marketplacePathInput" class="ant-input" readonly />
+          </div>
+          <div class="row">
+            <label>Registry 路径（只读）</label>
+            <input id="registryPathInput" class="ant-input" readonly />
+          </div>
+          <div class="row">
+            <label>DB 路径（只读）</label>
+            <input id="dbPathInput" class="ant-input" readonly />
+          </div>
+        </div>
+      </div>
+
+      <div class="grid-1">
+        <div class="card">
+          <div class="row">
+            <div class="section-title">上传 marketplace.json</div>
+            <input type="file" id="marketplaceFile" class="ant-input" accept=".json" />
+            <div class="inline">
+              <button id="uploadMarketplace" class="ant-btn ant-btn-primary">上传并激活</button>
+            </div>
+            <div class="muted" id="marketplacePath"></div>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="row">
+            <div class="section-title">已保存的 Marketplace</div>
+            <div class="table-wrap">
+              <table id="marketplaceStoreTable">
+                <thead><tr><th>名称</th><th>插件数</th><th>创建时间</th><th>启用</th><th>操作</th></tr></thead>
+                <tbody></tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="row">
+            <div class="section-title">Marketplace 概览</div>
+            <div class="inline">
+              <button id="installMissing" class="ant-btn ant-btn-primary">安装缺失插件</button>
+            </div>
+            <div id="marketplaceSummary" class="muted"></div>
+            <div class="table-wrap">
+              <table id="pluginsTable">
+                <thead><tr><th>插件</th><th>分类</th><th>Agents</th><th>Skills</th><th>Commands</th><th>状态</th><th>操作</th></tr></thead>
+                <tbody></tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="row">
+            <div class="section-title">插件详情</div>
+            <div id="marketplaceDetails"></div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <div id="mcpModal" class="modal">
+      <div class="modal-content card">
+        <div class="modal-header">
+          <h3 id="mcpModalTitle">新增 MCP</h3>
+          <button id="mcpCloseModal" class="ant-btn">关闭</button>
+        </div>
+        <div class="modal-body">
+          <div class="row">
+            <label>名称</label>
+            <input id="mcpName" class="ant-input" placeholder="filesystem / task / lsp" />
+          </div>
+          <div class="row">
+            <label>协议</label>
+            <select id="mcpTransport" class="ant-select">
+              <option value="stdio">stdio</option>
+              <option value="sse">sse</option>
+              <option value="http">http</option>
+            </select>
+            <span class="pill" id="mcpTransportHint">stdio</span>
+          </div>
+          <div id="mcpStdioFields">
+            <div class="row">
+              <label>Cmd</label>
+              <input id="mcpCommand" class="ant-input" placeholder="node /path/server.js" />
+            </div>
+            <div class="row">
+              <label>Args</label>
+              <textarea id="mcpArgs" class="ant-input" placeholder="--root /path/to/project&#10;--verbose"></textarea>
+            </div>
+          </div>
+          <div id="mcpHttpFields" style="display:none;">
+            <div class="row">
+              <label>Endpoint URL</label>
+              <input id="mcpEndpoint" class="ant-input" placeholder="http://127.0.0.1:8080/sse 或 http://127.0.0.1:8080/mcp" />
+            </div>
+            <div class="row">
+              <label>Headers (JSON)</label>
+              <textarea id="mcpHeaders" class="ant-input" placeholder='{"Authorization":"Bearer xxx"}'></textarea>
+            </div>
+          </div>
+          <div class="row">
+            <label><input type="checkbox" id="mcpEnabled" checked /> 启用</label>
+          </div>
+          <div class="row inline">
+            <button id="mcpSave" class="ant-btn ant-btn-primary">保存</button>
+            <button id="mcpClear" class="ant-btn">清空</button>
+          </div>
         </div>
       </div>
     </div>
   </div>
 
-  <section id="tab-marketplace" class="tab">
-    <div class="card">
-    <div class="row">
-      <label>上传 marketplace.json</label>
-      <input type="file" id="marketplaceFile" class="ant-input" accept=".json" />
-      <button id="uploadMarketplace" class="ant-btn ant-btn-primary">上传并激活</button>
-      <div class="muted" id="marketplacePath"></div>
-    </div>
-
-    <div class="row">
-      <label>Marketplace 概览</label>
-      <div class="inline">
-        <button id="installMissing" class="ant-btn ant-btn-primary">安装缺失插件</button>
-      </div>
-      <div id="marketplaceSummary" class="muted"></div>
-      <table id="pluginsTable">
-        <thead><tr><th>插件</th><th>分类</th><th>Agents</th><th>Skills</th><th>Commands</th><th>状态</th><th>操作</th></tr></thead>
-        <tbody></tbody>
-      </table>
-    </div>
-
-    <div class="row">
-      <label>插件详情</label>
-      <div id="marketplaceDetails"></div>
-    </div>
-    </div>
-  </section>
-
   <script>
-    const tabs = document.querySelectorAll('nav button');
+    const tabs = document.querySelectorAll('nav.tabs button');
     tabs.forEach(btn => btn.addEventListener('click', () => {
       document.querySelectorAll('.tab').forEach(tab => tab.classList.remove('active'));
       document.getElementById('tab-' + btn.dataset.tab).classList.add('active');
       tabs.forEach(node => {
-        node.classList.remove('ant-btn-primary');
+        node.classList.remove('is-active');
       });
-      btn.classList.add('ant-btn-primary');
+      btn.classList.add('is-active');
     }));
 
     function showMessage(text, kind) {
@@ -658,13 +715,12 @@ function renderPage() {
     };
 
     document.getElementById('saveSettings').onclick = async () => {
-      const raw = document.getElementById('allowPrefixes').value || '';
       const pluginsRoot = document.getElementById('pluginsRoot').value || '';
       const pluginsSourceRoot = document.getElementById('pluginsSourceRoot').value || '';
       await fetch('/api/settings', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ plugins_root: pluginsRoot, plugins_source_root: pluginsSourceRoot, mcp_allow_prefixes: raw })
+        body: JSON.stringify({ plugins_root: pluginsRoot, plugins_source_root: pluginsSourceRoot })
       });
       await fetchStatus();
       await fetchSummary();

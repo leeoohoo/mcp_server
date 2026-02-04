@@ -61,6 +61,9 @@ async function runOpenAiSdk(
   let stderr = '';
   let error: string | null = null;
   let exitCode: number | null = 0;
+  let stdoutTruncated = false;
+  let stderrTruncated = false;
+  let abortedForTruncation = false;
   try {
     const baseURL = normalizeBaseUrl(http.baseUrl);
     const client = new OpenAI({
@@ -68,22 +71,34 @@ async function runOpenAiSdk(
       baseURL: baseURL || undefined,
     });
     const messages = buildMessages(input);
-    const response = await client.chat.completions.create(
+    const stream = await client.chat.completions.create(
       {
         model: http.model,
         messages,
+        stream: true,
       },
       { signal: controller.signal }
     );
-    stdout = response?.choices?.[0]?.message?.content || '';
+    for await (const chunk of stream) {
+      const delta = chunk?.choices?.[0]?.delta?.content;
+      if (!delta) continue;
+      stdout += delta;
+      if (stdout.length > maxOutputBytes) {
+        stdout = stdout.slice(0, maxOutputBytes);
+        stdoutTruncated = true;
+        abortedForTruncation = true;
+        controller.abort();
+        break;
+      }
+    }
   } catch (err) {
-    error = err instanceof Error ? err.message : String(err);
-    exitCode = 1;
+    if (!abortedForTruncation) {
+      error = err instanceof Error ? err.message : String(err);
+      exitCode = 1;
+    }
   } finally {
     if (timeout) clearTimeout(timeout);
   }
-  let stdoutTruncated = false;
-  let stderrTruncated = false;
   if (stdout.length > maxOutputBytes) {
     stdout = stdout.slice(0, maxOutputBytes);
     stdoutTruncated = true;

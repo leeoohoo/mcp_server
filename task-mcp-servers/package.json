@@ -1,0 +1,33 @@
+{
+  "name": "task-mcp-server",
+  "version": "0.1.0",
+  "description": "Task MCP server (stdio) implemented in TypeScript.",
+  "type": "module",
+  "bin": {
+    "task-mcp-server": "dist/cli.js"
+  },
+  "files": [
+    "dist/**/*",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "start": "node dist/cli.js"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.25.2",
+    "better-sqlite3": "^12.6.2",
+    "zod": "^3.25.76"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "^7.6.8",
+    "@types/node": "^22.10.2",
+    "typescript": "^5.5.4"
+  }
+}

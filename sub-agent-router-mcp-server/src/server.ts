@@ -281,7 +281,12 @@ export function createSubAgentRouterServer(options: ServerOptions) {
               callTool: toolSession!.callTool,
               maxTurns: runtime.aiToolMaxTurns,
             },
-            { signal: abortSignal }
+            {
+              signal: abortSignal,
+              onEvent: (event) => {
+                jobStore.appendEvent(job.id, event.type, event.payload);
+              },
+            }
           );
         } else {
           result = await runAi(
@@ -291,7 +296,12 @@ export function createSubAgentRouterServer(options: ServerOptions) {
               user: input.task,
               meta: buildAiMeta(agent, command, runContext),
             },
-            { signal: abortSignal }
+            {
+              signal: abortSignal,
+              onEvent: (event) => {
+                jobStore.appendEvent(job.id, event.type, event.payload);
+              },
+            }
           );
         }
       } finally {

@@ -297,6 +297,26 @@ export class JobStore {
     }));
   }
 
+  listEvents(jobId: string, limit = 200): JobEvent[] {
+    const max = Number.isFinite(limit) && limit > 0 ? Math.trunc(limit) : 200;
+    const stmt = this.db.prepare(`
+      SELECT * FROM subagent_events
+      WHERE job_id = @job_id
+      ORDER BY created_at ASC
+      LIMIT @limit
+    `);
+    const rows = stmt.all({ job_id: jobId, limit: max }) as DbEventRow[];
+    return rows.map((row) => ({
+      id: row.id,
+      jobId: row.job_id,
+      type: row.type,
+      payloadJson: row.payload_json ?? null,
+      createdAt: row.created_at,
+      sessionId: row.session_id,
+      runId: row.run_id || '',
+    }));
+  }
+
   private fromJobRow(row: DbJobRow): JobRecord {
     return {
       id: row.id,

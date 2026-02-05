@@ -37,13 +37,21 @@ export interface AiToolingOptions {
   maxTurns?: number;
 }
 
+export interface AiEvent {
+  type: string;
+  payload: Record<string, unknown>;
+}
+
+export type AiEventHandler = (event: AiEvent) => void;
+
 export async function runAi(
   config: AiConfig,
   input: AiRunInput,
-  options: { signal?: AbortSignal } = {}
+  options: { signal?: AbortSignal; onEvent?: AiEventHandler } = {}
 ): Promise<RunResult> {
   const mode = config.command && config.command.length > 0 ? 'command' : 'http';
   logAiRequest(config, input, mode);
+  emitEvent(options.onEvent, 'ai_request', buildRequestEventPayload(config, input, mode));
   let result: RunResult | null = null;
   const maxOutputBytes = normalizeMaxOutputBytes(config.maxOutputBytes);
   try {
@@ -60,6 +68,7 @@ export async function runAi(
         }
       );
       logAiResponse(result, mode);
+      emitEvent(options.onEvent, 'ai_response', buildResponseEventPayload(result, mode));
       return result;
     }
     if (!config.http || !config.http.apiKey || !config.http.model) {
@@ -67,9 +76,11 @@ export async function runAi(
     }
     result = await runOpenAiSdk(config.http, input, config.timeoutMs, maxOutputBytes, options.signal);
     logAiResponse(result, mode);
+    emitEvent(options.onEvent, 'ai_response', buildResponseEventPayload(result, mode));
     return result;
   } catch (err) {
     logAiError(err, mode);
+    emitEvent(options.onEvent, 'ai_error', buildErrorEventPayload(err, mode));
     throw err;
   }
 }
@@ -78,7 +89,7 @@ export async function runAiWithTools(
   config: AiConfig,
   input: AiRunInput,
   options: AiToolingOptions,
-  runOptions: { signal?: AbortSignal } = {}
+  runOptions: { signal?: AbortSignal; onEvent?: AiEventHandler } = {}
 ): Promise<RunResult> {
   if (config.command && config.command.length > 0) {
     throw new Error('AI tool calling is not supported in command mode');
@@ -141,6 +152,11 @@ export async function runAiWithTools(
   try {
     for (let turn = 0; turn < maxTurns; turn += 1) {
       logAiRequestWithMessages(config, baseURL, messages, openAiTools, turn + 1);
+      emitEvent(
+        runOptions.onEvent,
+        'ai_request',
+        buildToolRequestEventPayload(config, baseURL, messages, openAiTools, turn + 1)
+      );
       const request = applyReasoningSettings(config.http, {
         model: config.http.model,
         messages: messages as any,
@@ -153,6 +169,11 @@ export async function runAiWithTools(
       const choice = response?.choices?.[0];
       const message = choice?.message as any;
       logAiToolResponse(message, turn + 1);
+      emitEvent(
+        runOptions.onEvent,
+        'ai_response',
+        buildToolResponseEventPayload(message, turn + 1)
+      );
 
       const toolCalls = Array.isArray(message?.tool_calls) ? message.tool_calls : [];
       if (toolCalls.length === 0) {
@@ -182,6 +203,12 @@ export async function runAiWithTools(
             parseError = err instanceof Error ? err.message : String(err);
           }
         }
+        emitEvent(runOptions.onEvent, 'tool_call', {
+          step: turn + 1,
+          tool: toolName,
+          arguments: parseError ? toolArgsRaw : toolArgs,
+          parse_error: parseError,
+        });
         let toolResult: string;
         if (!toolName) {
           toolResult = JSON.stringify({ ok: false, error: 'Tool call missing name.' });
@@ -194,6 +221,11 @@ export async function runAiWithTools(
         } else {
           toolResult = await options.callTool(toolName, toolArgs);
         }
+        emitEvent(runOptions.onEvent, 'tool_result', {
+          step: turn + 1,
+          tool: toolName,
+          result: truncateValue(toolResult),
+        });
 
         messages.push({
           role: 'tool',
@@ -439,6 +471,91 @@ function isMoonshotProvider(baseUrl: string, model: string): boolean {
   if (url.includes('moonshot')) return true;
   const name = String(model || '').toLowerCase();
   return name.includes('kimi');
+}
+
+function emitEvent(handler: AiEventHandler | undefined, type: string, payload: Record<string, unknown>) {
+  if (!handler) return;
+  try {
+    handler({ type, payload });
+  } catch {
+    // Ignore event handler errors.
+  }
+}
+
+function buildRequestEventPayload(
+  config: AiConfig,
+  input: AiRunInput,
+  mode: 'command' | 'http'
+): Record<string, unknown> {
+  if (mode === 'command') {
+    return {
+      mode,
+      timeout_ms: config.timeoutMs,
+      max_output_bytes: config.maxOutputBytes,
+      command: config.command || [],
+      input: sanitizeAiInput(input, { includePrompt: true }),
+    };
+  }
+  const http = config.http || { apiKey: '', baseUrl: '', model: '' };
+  return {
+    mode,
+    timeout_ms: config.timeoutMs,
+    max_output_bytes: config.maxOutputBytes,
+    model: http.model || '',
+    base_url: normalizeBaseUrl(http.baseUrl || ''),
+    reasoning_enabled: http.reasoningEnabled,
+    input: sanitizeAiInput(input, { includeMessages: true }),
+  };
+}
+
+function buildToolRequestEventPayload(
+  config: AiConfig,
+  baseUrl: string,
+  messages: Array<Record<string, unknown>>,
+  tools: Array<Record<string, unknown>>,
+  step: number
+): Record<string, unknown> {
+  return {
+    mode: 'http',
+    step,
+    timeout_ms: config.timeoutMs,
+    max_output_bytes: config.maxOutputBytes,
+    model: config.http?.model || '',
+    base_url: baseUrl,
+    reasoning_enabled: config.http?.reasoningEnabled,
+    messages: sanitizeMessages(messages),
+    tools: sanitizeTools(tools),
+  };
+}
+
+function buildToolResponseEventPayload(message: Record<string, unknown>, step: number): Record<string, unknown> {
+  return {
+    mode: 'http',
+    step,
+    message: sanitizeMessage(message),
+  };
+}
+
+function buildResponseEventPayload(result: RunResult, mode: 'command' | 'http'): Record<string, unknown> {
+  return {
+    mode,
+    stdout: truncateValue(result.stdout || ''),
+    stderr: truncateValue(result.stderr || ''),
+    exit_code: result.exitCode,
+    signal: result.signal,
+    duration_ms: result.durationMs,
+    started_at: result.startedAt,
+    finished_at: result.finishedAt,
+    stdout_truncated: result.stdoutTruncated,
+    stderr_truncated: result.stderrTruncated,
+    error: result.error,
+    timed_out: result.timedOut,
+  };
+}
+
+function buildErrorEventPayload(err: unknown, mode: 'command' | 'http'): Record<string, unknown> {
+  const message = err instanceof Error ? err.message : String(err);
+  return { mode, error: message };
 }
 
 function logAiRequest(config: AiConfig, input: AiRunInput, mode: 'command' | 'http') {

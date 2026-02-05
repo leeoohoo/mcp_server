@@ -182,6 +182,19 @@ export function startAdminServer(options: AdminServerOptions) {
         const sessions = options.jobStore.listSessions();
         return sendJson(res, { ok: true, sessions });
       }
+      if (req.method === 'GET' && pathname === '/api/job_events') {
+        if (!options.jobStore) {
+          return sendJson(res, { ok: false, error: 'job store not configured' }, 500);
+        }
+        const parsed = new URL(url, 'http://localhost');
+        const jobId = parsed.searchParams.get('job_id') || '';
+        const limit = Number(parsed.searchParams.get('limit') || '');
+        if (!jobId) {
+          return sendJson(res, { ok: false, error: 'missing job_id' }, 400);
+        }
+        const events = options.jobStore.listEvents(jobId, Number.isFinite(limit) ? limit : undefined);
+        return sendJson(res, { ok: true, events });
+      }
       if (req.method === 'GET' && url === '/api/mcp_servers') {
         return sendJson(res, { servers: options.configStore.listMcpServers() });
       }
@@ -363,7 +376,7 @@ function normalizeArgs(input: unknown): string[] {
 }
 
 function renderPage() {
-  return `<!doctype html>
+    return `<!doctype html>
 <html lang="zh">
 <head>
   <meta charset="utf-8" />
@@ -376,7 +389,8 @@ function renderPage() {
       --app-muted: #64748b;
     }
     body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; margin: 0; background: var(--app-bg); color: #0f172a; }
-    .page { max-width: 1240px; }
+    .page { width: 100%; max-width: none; padding: 24px; }
+    @media (max-width: 768px) { .page { padding: 16px; } }
     .page-header { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-bottom: 16px; }
     h1 { font-size: 20px; margin: 0; }
     nav.tabs { display: flex; gap: 8px; margin: 12px 0 16px; flex-wrap: wrap; }
@@ -411,33 +425,108 @@ function renderPage() {
     .modal-body textarea { width: 100%; min-height: 120px; }
     .modal-body input { width: 100%; }
     .pill { display: inline-block; padding: 2px 8px; border-radius: 999px; background: #f3f3f3; font-size: 12px; margin-left: 6px; }
+    .drawer { display: none; position: fixed; inset: 0; background: rgba(15, 23, 42, 0.4); z-index: 1100; justify-content: flex-end; }
+    .drawer.active { display: flex; }
+    .drawer-content { width: min(980px, 94vw); height: 100%; background: #fff; padding: 24px; overflow: auto; box-shadow: -12px 0 32px rgba(15, 23, 42, 0.2); }
+    .drawer-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px; }
+    .jobs-board { align-items: start; grid-template-columns: minmax(260px, 360px) minmax(0, 1fr); }
+    @media (max-width: 1100px) { .jobs-board { grid-template-columns: 1fr; } }
+    .jobs-list-card { max-height: 70vh; overflow: auto; }
+    .job-row { cursor: pointer; }
+    .job-row.active { background: rgba(59, 130, 246, 0.12); }
+    .code-block { background: #0f172a; color: #e2e8f0; padding: 12px; border-radius: 10px; font-size: 12px; white-space: pre-wrap; }
+    .timeline { position: relative; margin-top: 8px; }
+    .timeline::before { content: ''; position: absolute; left: 8px; top: 0; bottom: 0; width: 2px; background: #d6defa; }
+    .timeline-item { position: relative; margin: 10px 0; padding-left: 24px; }
+    .timeline-item summary { cursor: pointer; list-style: none; }
+    .timeline-item summary::-webkit-details-marker { display: none; }
+    .timeline-dot { position: absolute; left: 2px; top: 6px; width: 12px; height: 12px; background: #3b82f6; border-radius: 50%; box-shadow: 0 0 0 3px #e0e7ff; }
+    .timeline-title { font-weight: 600; }
+    .timeline-meta { color: var(--app-muted); font-size: 12px; margin-left: 6px; }
+    .timeline-body { margin-top: 8px; }
   </style>
 </head>
 <body>
-  <div class="page container py-4">
+  <div class="page">
     <div class="page-header">
       <div>
         <h1>Sub-agent Router</h1>
         <div class="muted">Admin UI</div>
       </div>
-      <span class="badge text-bg-primary-subtle border border-primary-subtle">Local</span>
+      <div class="d-flex align-items-center gap-2">
+        <span class="badge text-bg-primary-subtle border border-primary-subtle">Local</span>
+        <button id="settingsToggle" class="btn btn-outline-secondary btn-sm" title="设置" aria-label="设置">⚙</button>
+      </div>
     </div>
 
-    <nav class="tabs main-tabs btn-group" role="tablist">
-      <button class="btn btn-outline-primary tab-btn active" data-tab="settings">设置</button>
-      <button class="btn btn-outline-primary tab-btn" data-tab="jobs">任务</button>
-    </nav>
-
     <div id="message" class="alert d-none" role="alert"></div>
+<section id="tab-jobs" class="tab active">
+      <div class="grid-2 jobs-board">
+        <div class="card jobs-list-card">
+          <div class="field-row">
+            <div class="section-title">任务列表</div>
+            <div class="inline">
+              <input id="jobSessionFilter" class="form-control form-control-sm" placeholder="Session ID (留空=全部)" list="jobSessionList" />
+              <datalist id="jobSessionList"></datalist>
+              <select id="jobStatusFilter" class="form-select form-select-sm">
+                <option value="">状态: 全部</option>
+                <option value="queued">queued</option>
+                <option value="running">running</option>
+                <option value="done">done</option>
+                <option value="error">error</option>
+                <option value="cancelled">cancelled</option>
+              </select>
+              <label><input id="jobAllSessions" type="checkbox" checked /> 全部会话</label>
+              <button id="jobRefresh" class="btn btn-outline-secondary btn-sm">刷新</button>
+            </div>
+            <div class="table-responsive">
+              <table id="jobsTable" class="table table-sm table-hover align-middle">
+                <thead>
+                  <tr>
+                    <th>时间</th>
+                    <th>Session</th>
+                    <th>Agent</th>
+                    <th>Status</th>
+                    <th>Task</th>
+                    <th>Duration</th>
+                    <th>Error</th>
+                  </tr>
+                </thead>
+                <tbody></tbody>
+              </table>
+            </div>
+          </div>
+        </div>
 
-    <section id="tab-settings" class="tab active">
-      <nav class="tabs sub-tabs btn-group" role="tablist">
-        <button class="btn btn-outline-secondary tab-btn active" data-subtab="model">模型</button>
-        <button class="btn btn-outline-secondary tab-btn" data-subtab="mcp">MCP</button>
-        <button class="btn btn-outline-secondary tab-btn" data-subtab="marketplace">Marketplace</button>
-      </nav>
+        <div class="card">
+          <div class="field-row">
+            <div class="section-title">任务详情</div>
+            <div id="jobDetail" class="muted">选择任务查看执行过程。</div>
+          </div>
+          <div class="field-row">
+            <div class="section-title">执行过程</div>
+            <div id="jobEvents" class="job-events"></div>
+          </div>
+        </div>
+      </div>
+    </section>
 
-      <section id="subtab-model" class="subtab active">
+    
+    <div id="settingsDrawer" class="drawer">
+      <div class="drawer-content">
+        <div class="drawer-header">
+          <div>
+            <div class="section-title">设置</div>
+            <div class="muted">模型 / MCP / Marketplace</div>
+          </div>
+          <button id="settingsClose" class="btn btn-outline-secondary btn-sm">关闭</button>
+        </div>
+        <nav class="tabs sub-tabs btn-group" role="tablist">
+          <button class="btn btn-outline-secondary tab-btn active" data-subtab="model">模型</button>
+          <button class="btn btn-outline-secondary tab-btn" data-subtab="mcp">MCP</button>
+          <button class="btn btn-outline-secondary tab-btn" data-subtab="marketplace">Marketplace</button>
+        </nav>
+<section id="subtab-model" class="subtab active">
         <div class="grid-2">
           <div class="card">
             <div class="field-row">
@@ -629,49 +718,12 @@ function renderPage() {
         </div>
       </div>
       </section>
-    </section>
+    
 
-    <section id="tab-jobs" class="tab">
-      <div class="grid-1">
-        <div class="card">
-          <div class="field-row">
-            <div class="section-title">任务列表</div>
-            <div class="inline">
-              <input id="jobSessionFilter" class="form-control form-control-sm" placeholder="Session ID (留空=全部)" list="jobSessionList" />
-              <datalist id="jobSessionList"></datalist>
-              <select id="jobStatusFilter" class="form-select form-select-sm">
-                <option value="">状态: 全部</option>
-                <option value="queued">queued</option>
-                <option value="running">running</option>
-                <option value="done">done</option>
-                <option value="error">error</option>
-                <option value="cancelled">cancelled</option>
-              </select>
-              <label><input id="jobAllSessions" type="checkbox" checked /> 全部会话</label>
-              <button id="jobRefresh" class="btn btn-outline-secondary btn-sm">刷新</button>
-            </div>
-            <div class="table-responsive">
-              <table id="jobsTable" class="table table-sm table-hover align-middle">
-                <thead>
-                  <tr>
-                    <th>时间</th>
-                    <th>Session</th>
-                    <th>Agent</th>
-                    <th>Status</th>
-                    <th>Task</th>
-                    <th>Duration</th>
-                    <th>Error</th>
-                  </tr>
-                </thead>
-                <tbody></tbody>
-              </table>
-            </div>
-          </div>
-        </div>
+    
       </div>
-    </section>
-
-    <div id="mcpModal" class="modal">
+    </div>
+<div id="mcpModal" class="modal">
       <div class="modal-content card">
         <div class="modal-header">
           <h3 id="mcpModalTitle">新增 MCP</h3>
@@ -724,18 +776,26 @@ function renderPage() {
   </div>
 
   <script>
-    const mainTabs = document.querySelectorAll('nav.tabs.main-tabs .tab-btn');
-    mainTabs.forEach(btn => btn.addEventListener('click', () => {
-      const target = btn.dataset.tab;
-      if (!target) return;
-      document.querySelectorAll('.tab').forEach(tab => tab.classList.remove('active'));
-      const section = document.getElementById('tab-' + target);
-      if (section) section.classList.add('active');
-      mainTabs.forEach(node => {
-        node.classList.remove('active');
+    const settingsDrawer = document.getElementById('settingsDrawer');
+    const settingsToggle = document.getElementById('settingsToggle');
+    const settingsClose = document.getElementById('settingsClose');
+    if (settingsToggle && settingsDrawer) {
+      settingsToggle.addEventListener('click', () => {
+        settingsDrawer.classList.add('active');
       });
-      btn.classList.add('active');
-    }));
+    }
+    if (settingsClose && settingsDrawer) {
+      settingsClose.addEventListener('click', () => {
+        settingsDrawer.classList.remove('active');
+      });
+    }
+    if (settingsDrawer) {
+      settingsDrawer.addEventListener('click', (event) => {
+        if (event.target === settingsDrawer) {
+          settingsDrawer.classList.remove('active');
+        }
+      });
+    }
 
     const subTabs = document.querySelectorAll('nav.tabs.sub-tabs .tab-btn');
     subTabs.forEach(btn => btn.addEventListener('click', () => {
@@ -802,6 +862,8 @@ function renderPage() {
 
     let jobs = [];
     let jobSessions = [];
+    let selectedJobId = '';
+    let jobEvents = [];
 
     function parseJsonSafe(text) {
       if (!text) return null;
@@ -819,6 +881,25 @@ function renderPage() {
     function formatTime(iso) {
       if (!iso) return '';
       return String(iso).replace('T', ' ').replace('Z', '');
+    }
+
+    function escapeHtml(value) {
+      return String(value || '')
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/\"/g, '&quot;')
+        .replace(/'/g, '&#39;');
+    }
+
+    function formatJson(value) {
+      if (value === null || value === undefined) return '';
+      if (typeof value === 'string') return value;
+      try {
+        return JSON.stringify(value, null, 2);
+      } catch {
+        return String(value);
+      }
     }
 
     function renderJobSessions() {
@@ -850,6 +931,10 @@ function renderPage() {
         const errorText = job.error || (result && result.error) || '';
         const status = job.status || '';
         const tr = document.createElement('tr');
+        tr.classList.add('job-row');
+        if (job.id === selectedJobId) {
+          tr.classList.add('active');
+        }
         tr.innerHTML =
           '<td>' + formatTime(job.createdAt) + '</td>' +
           '<td>' + (job.sessionId || '') + '</td>' +
@@ -858,8 +943,138 @@ function renderPage() {
           '<td>' + String(job.task || '').slice(0, 120) + '</td>' +
           '<td>' + duration + '</td>' +
           '<td>' + (errorText ? String(errorText).slice(0, 120) : '') + '</td>';
+        tr.addEventListener('click', () => {
+          selectJob(job);
+        });
         body.appendChild(tr);
       });
+    }
+
+    function renderJobDetail(job) {
+      const detail = document.getElementById('jobDetail');
+      if (!detail) return;
+      if (!job) {
+        detail.innerHTML = '<div class="muted">选择任务查看执行过程。</div>';
+        return;
+      }
+      const result = parseJsonSafe(job.resultJson);
+      const payload = parseJsonSafe(job.payloadJson);
+      const errorText = job.error || (result && result.error) || '';
+      const outputText = (result && (result.response || result.stdout)) || '';
+      const metaRows = [
+        ['任务', job.task || ''],
+        ['状态', job.status || ''],
+        ['Job ID', job.id || ''],
+        ['Agent', job.agentId || ''],
+        ['Command', job.commandId || ''],
+        ['Session', job.sessionId || ''],
+        ['Run', job.runId || ''],
+        ['开始时间', formatTime(job.createdAt)],
+        ['更新时间', formatTime(job.updatedAt)],
+      ];
+      const metaHtml = metaRows
+        .map(([label, value]) => '<div><strong>' + escapeHtml(label) + ':</strong> ' + escapeHtml(value) + '</div>')
+        .join('');
+      const outputHtml = outputText
+        ? '<pre class=\"code-block\">' + escapeHtml(outputText) + '</pre>'
+        : '<div class=\"muted\">暂无输出</div>';
+      const errorHtml = errorText
+        ? '<div class=\"alert alert-danger\">' + escapeHtml(errorText) + '</div>'
+        : '';
+      const payloadHtml = payload
+        ? '<details class=\"mt-2\"><summary class=\"section-title\">请求参数</summary><pre class=\"code-block\">' +
+          escapeHtml(formatJson(payload)) +
+          '</pre></details>'
+        : '';
+      detail.innerHTML = '<div class=\"job-meta\">' + metaHtml + '</div>' + errorHtml + payloadHtml + outputHtml;
+    }
+
+    function renderJobEvents() {
+      const box = document.getElementById('jobEvents');
+      if (!box) return;
+      if (!selectedJobId) {
+        box.innerHTML = '';
+        return;
+      }
+      if (!jobEvents.length) {
+        box.innerHTML = '<div class="muted">暂无执行过程。</div>';
+        return;
+      }
+      box.innerHTML = '<div class="timeline">' + jobEvents.map(renderEventCard).join('') + '</div>';
+    }
+
+    function renderEventCard(ev) {
+      const payload = parseJsonSafe(ev.payloadJson);
+      const labelMap = {
+        start: '开始',
+        finish: '完成',
+        finish_error: '失败',
+        ai_request: 'AI 请求',
+        ai_response: 'AI 响应',
+        ai_error: 'AI 错误',
+        tool_call: '工具调用',
+        tool_result: '工具结果'
+      };
+      const label = labelMap[ev.type] || ev.type;
+      const step = payload && payload.step ? ' · step ' + payload.step : '';
+      const model = payload && payload.model ? ' · ' + payload.model : '';
+      const toolName = payload && payload.tool ? ' · ' + payload.tool : '';
+      const header = escapeHtml(label) + step + model + toolName;
+      const openByDefault = ev.type === 'tool_call' || ev.type === 'tool_result' || ev.type === 'ai_error' || ev.type === 'finish_error';
+
+      let bodyHtml = '';
+      if (!payload && !ev.payloadJson) {
+        bodyHtml = '<div class="muted">无 payload</div>';
+      } else if (ev.type === 'tool_call') {
+        bodyHtml = '<pre class="code-block">' + escapeHtml(formatJson(payload?.arguments ?? payload)) + '</pre>';
+      } else if (ev.type === 'tool_result') {
+        bodyHtml = '<pre class="code-block">' + escapeHtml(String(payload?.result ?? ev.payloadJson ?? '')) + '</pre>';
+      } else if (ev.type === 'ai_response' && payload && payload.message) {
+        bodyHtml = '<pre class="code-block">' + escapeHtml(formatJson(payload.message)) + '</pre>';
+      } else {
+        const payloadText = payload ? formatJson(payload) : (ev.payloadJson || '');
+        const summary = payloadText && payloadText.length > 0 ? payloadText : '';
+        if (!summary) {
+          bodyHtml = '<div class="muted">无 payload</div>';
+        } else {
+          const truncated = summary.length > 6000 ? summary.slice(0, 6000) + ' ... [truncated]' : summary;
+          bodyHtml = '<details>' +
+            '<summary class="muted">展开 payload</summary>' +
+            '<pre class="code-block">' + escapeHtml(truncated) + '</pre>' +
+            '</details>';
+        }
+      }
+
+      return (
+        '<details class="timeline-item"' + (openByDefault ? ' open' : '') + '>' +
+        '<summary>' +
+        '<span class="timeline-dot"></span>' +
+        '<span class="timeline-title">' + header + '</span>' +
+        '<span class="timeline-meta">' + escapeHtml(formatTime(ev.createdAt)) + '</span>' +
+        '</summary>' +
+        '<div class="timeline-body">' + bodyHtml + '</div>' +
+        '</details>'
+      );
+    }
+
+    async function fetchJobEvents(jobId) {
+      if (!jobId) return;
+      const res = await fetch('/api/job_events?job_id=' + encodeURIComponent(jobId));
+      const data = await res.json();
+      jobEvents = Array.isArray(data.events) ? data.events : [];
+      renderJobEvents();
+    }
+
+    async function selectJob(job) {
+      selectedJobId = job && job.id ? job.id : '';
+      renderJobs();
+      renderJobDetail(job);
+      if (selectedJobId) {
+        await fetchJobEvents(selectedJobId);
+      } else {
+        jobEvents = [];
+        renderJobEvents();
+      }
     }
 
     function updateJobSessionState() {
@@ -885,6 +1100,18 @@ function renderPage() {
       const data = await res.json();
       jobs = Array.isArray(data.jobs) ? data.jobs : [];
       renderJobs();
+      if (selectedJobId) {
+        const selected = jobs.find(job => job.id === selectedJobId);
+        if (selected) {
+          renderJobDetail(selected);
+          await fetchJobEvents(selectedJobId);
+        } else {
+          selectedJobId = '';
+          jobEvents = [];
+          renderJobDetail(null);
+          renderJobEvents();
+        }
+      }
     }
 
     function valueOrEmpty(value) {
@@ -1448,7 +1675,6 @@ function renderPage() {
 </body>
 </html>`;
 }
-
 function buildMarketplaceSummary(options: AdminServerOptions): MarketplaceSummary {
   const raw = loadMarketplaceJson(options);
   const plugins = Array.isArray(raw?.plugins) ? raw.plugins : [];

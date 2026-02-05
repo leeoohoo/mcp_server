@@ -63,6 +63,8 @@ export function startAdminServer(options: AdminServerOptions) {
       }
       if (req.method === 'GET' && url === '/api/status') {
         const modelConfig = options.configStore.getModelConfig();
+        const modelConfigs = options.configStore.getModelConfigs();
+        const activeModelId = options.configStore.getActiveModelId();
         const runtimeConfig = options.configStore.getRuntimeConfig();
         const payload = {
           allow_prefixes: options.configStore.getAllowPrefixes(),
@@ -77,7 +79,17 @@ export function startAdminServer(options: AdminServerOptions) {
             api_key: modelConfig.apiKey,
             base_url: modelConfig.baseUrl,
             model: modelConfig.model,
+            reasoning_enabled: modelConfig.reasoningEnabled,
           },
+          model_configs: modelConfigs.map((entry) => ({
+            id: entry.id,
+            name: entry.name,
+            api_key: entry.apiKey,
+            base_url: entry.baseUrl,
+            model: entry.model,
+            reasoning_enabled: entry.reasoningEnabled,
+          })),
+          active_model_id: activeModelId,
           runtime_config: runtimeConfig,
         };
         return sendJson(res, payload);
@@ -103,10 +115,26 @@ export function startAdminServer(options: AdminServerOptions) {
       }
       if (req.method === 'POST' && url === '/api/model_settings') {
         const body = await readJson(req);
-        const apiKey = typeof body?.api_key === 'string' ? body.api_key.trim() : '';
-        const baseUrl = typeof body?.base_url === 'string' ? body.base_url.trim() : '';
-        const model = typeof body?.model === 'string' ? body.model.trim() : '';
-        options.configStore.setModelConfig({ apiKey, baseUrl, model });
+        if (Array.isArray(body?.models)) {
+          const models = body.models.map((entry: any) => ({
+            id: entry?.id,
+            name: entry?.name,
+            apiKey: entry?.api_key,
+            baseUrl: entry?.base_url,
+            model: entry?.model,
+            reasoningEnabled: entry?.reasoning_enabled !== false,
+          }));
+          options.configStore.setModelConfigs(models);
+          if (typeof body?.active_model_id === 'string') {
+            options.configStore.setActiveModelId(body.active_model_id);
+          }
+        } else {
+          const apiKey = typeof body?.api_key === 'string' ? body.api_key.trim() : '';
+          const baseUrl = typeof body?.base_url === 'string' ? body.base_url.trim() : '';
+          const model = typeof body?.model === 'string' ? body.model.trim() : '';
+          const reasoningEnabled = body?.reasoning_enabled !== false;
+          options.configStore.setModelConfig({ apiKey, baseUrl, model, reasoningEnabled });
+        }
         return sendJson(res, { ok: true });
       }
       if (req.method === 'POST' && url === '/api/runtime_settings') {
@@ -114,6 +142,7 @@ export function startAdminServer(options: AdminServerOptions) {
         options.configStore.setRuntimeConfig({
           aiTimeoutMs: body?.ai_timeout_ms,
           aiMaxOutputBytes: body?.ai_max_output_bytes,
+          aiToolMaxTurns: body?.ai_tool_max_turns,
           commandTimeoutMs: body?.command_timeout_ms,
           commandMaxOutputBytes: body?.command_max_output_bytes,
         });
@@ -279,6 +308,26 @@ function normalizeArgs(input: unknown): string[] {
   if (typeof input === 'string') {
     const raw = input.trim();
     if (!raw) return [];
+    if (raw.startsWith('[')) {
+      const parsed = parseCommand(raw);
+      return Array.isArray(parsed) ? parsed.map((entry) => String(entry)) : [];
+    }
+    const commaParts = raw
+      .split(',')
+      .map((part) => part.trim())
+      .filter(Boolean);
+    if (commaParts.length > 1) {
+      const args: string[] = [];
+      for (const part of commaParts) {
+        const parsed = parseCommand(part);
+        if (Array.isArray(parsed) && parsed.length > 0) {
+          args.push(...parsed.map((entry) => String(entry)));
+        } else if (part) {
+          args.push(part);
+        }
+      }
+      return args.filter(Boolean);
+    }
     const parsed = parseCommand(raw);
     return Array.isArray(parsed) ? parsed.map((entry) => String(entry)) : [];
   }
@@ -371,21 +420,44 @@ function renderPage() {
       <div class="grid-2">
         <div class="card">
           <div class="row">
-            <div class="section-title">模型配置</div>
+            <div class="section-title">模型列表</div>
+            <div class="table-wrap">
+              <table id="modelTable">
+                <thead>
+                  <tr><th>名称</th><th>Model</th><th>Base URL</th><th>推理</th><th>当前</th><th>操作</th></tr>
+                </thead>
+                <tbody></tbody>
+              </table>
+            </div>
+            <div class="inline">
+              <button id="modelAdd" class="ant-btn ant-btn-primary">新增模型</button>
+            </div>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="row">
+            <div class="section-title" id="modelFormTitle">新增/编辑模型</div>
+            <label>名称</label>
+            <input id="modelNameInput" class="ant-input" placeholder="例如：Kimi / GPT" />
             <label>API Key</label>
-            <input id="modelApiKey" class="ant-input" type="password" placeholder="sk-..." />
+            <input id="modelApiKeyInput" class="ant-input" type="password" placeholder="sk-..." />
             <div class="muted">仅保存在本地数据库中，不会上传。</div>
           </div>
           <div class="row">
             <label>Base URL</label>
-            <input id="modelBaseUrl" class="ant-input" placeholder="https://api.openai.com/v1" />
+            <input id="modelBaseUrlInput" class="ant-input" placeholder="https://api.openai.com/v1" />
           </div>
           <div class="row">
             <label>Model</label>
-            <input id="modelName" class="ant-input" placeholder="gpt-4o-mini / deepseek-chat / ..." />
+            <input id="modelModelInput" class="ant-input" placeholder="gpt-4o-mini / kimi-k2.5 / ..." />
           </div>
           <div class="row inline">
-            <button id="saveModel" class="ant-btn ant-btn-primary">保存模型配置</button>
+            <label><input id="modelReasoningEnabled" type="checkbox" /> 启用推理</label>
+          </div>
+          <div class="row inline">
+            <button id="modelSave" class="ant-btn ant-btn-primary">保存模型</button>
+            <button id="modelClear" class="ant-btn">清空</button>
           </div>
         </div>
 
@@ -396,15 +468,19 @@ function renderPage() {
             <input id="aiTimeoutMs" class="ant-input" placeholder="180000" />
           </div>
           <div class="row">
-            <label>AI Max Output Bytes</label>
+            <label>AI Max Output Bytes (0=无限)</label>
             <input id="aiMaxOutputBytes" class="ant-input" placeholder="2097152" />
+          </div>
+          <div class="row">
+            <label>AI Tool Max Turns</label>
+            <input id="aiToolMaxTurns" class="ant-input" placeholder="100" />
           </div>
           <div class="row">
             <label>Command Timeout (ms, 0=无限)</label>
             <input id="commandTimeoutMs" class="ant-input" placeholder="120000" />
           </div>
           <div class="row">
-            <label>Command Max Output Bytes</label>
+            <label>Command Max Output Bytes (0=无限)</label>
             <input id="commandMaxOutputBytes" class="ant-input" placeholder="1048576" />
           </div>
           <div class="row inline">
@@ -619,11 +695,10 @@ function renderPage() {
       document.getElementById('marketplacePathInput').value = data.marketplace_path || '';
       document.getElementById('registryPathInput').value = data.registry_path || '';
       document.getElementById('dbPathInput').value = data.db_path || '';
-      document.getElementById('modelApiKey').value = (data.model_config && data.model_config.api_key) || '';
-      document.getElementById('modelBaseUrl').value = (data.model_config && data.model_config.base_url) || '';
-      document.getElementById('modelName').value = (data.model_config && data.model_config.model) || '';
+      loadModelConfigs(data);
       document.getElementById('aiTimeoutMs').value = valueOrEmpty(data.runtime_config && data.runtime_config.aiTimeoutMs);
       document.getElementById('aiMaxOutputBytes').value = valueOrEmpty(data.runtime_config && data.runtime_config.aiMaxOutputBytes);
+      document.getElementById('aiToolMaxTurns').value = valueOrEmpty(data.runtime_config && data.runtime_config.aiToolMaxTurns);
       document.getElementById('commandTimeoutMs').value = valueOrEmpty(data.runtime_config && data.runtime_config.commandTimeoutMs);
       document.getElementById('commandMaxOutputBytes').value = valueOrEmpty(data.runtime_config && data.runtime_config.commandMaxOutputBytes);
       document.getElementById('marketplacePath').textContent = 'marketplace 路径: ' + (data.marketplace_path || '');
@@ -650,6 +725,91 @@ function renderPage() {
     function valueOrEmpty(value) {
       if (value === null || value === undefined) return '';
       return String(value);
+    }
+
+    let modelConfigs = [];
+    let activeModelId = '';
+    let modelEditId = '';
+
+    function loadModelConfigs(data) {
+      let list = Array.isArray(data.model_configs) ? data.model_configs : [];
+      if (!list.length && data.model_config) {
+        const legacy = data.model_config || {};
+        list = [{
+          id: 'default',
+          name: 'Default',
+          api_key: legacy.api_key || '',
+          base_url: legacy.base_url || '',
+          model: legacy.model || '',
+          reasoning_enabled: legacy.reasoning_enabled !== false
+        }];
+      }
+      modelConfigs = list.map(entry => normalizeModelEntry(entry));
+      activeModelId = data.active_model_id || (modelConfigs[0] && modelConfigs[0].id) || '';
+      renderModels();
+    }
+
+    function normalizeModelEntry(entry) {
+      const id = String(entry.id || '').trim() || ('model_' + Math.random().toString(36).slice(2, 8));
+      return {
+        id,
+        name: String(entry.name || id),
+        api_key: String(entry.api_key || ''),
+        base_url: String(entry.base_url || ''),
+        model: String(entry.model || ''),
+        reasoning_enabled: entry.reasoning_enabled !== false
+      };
+    }
+
+    function renderModels() {
+      const body = document.querySelector('#modelTable tbody');
+      body.innerHTML = '';
+      modelConfigs.forEach(entry => {
+        const tr = document.createElement('tr');
+        const reasoning = entry.reasoning_enabled ? '开' : '关';
+        const active = entry.id === activeModelId;
+        const activeCell = active ? '<span class="badge">当前</span>' : '<button class="ant-btn" data-activate="' + entry.id + '">设为当前</button>';
+        tr.innerHTML = '<td>' + entry.name + '</td>' +
+          '<td>' + entry.model + '</td>' +
+          '<td>' + entry.base_url + '</td>' +
+          '<td>' + reasoning + '</td>' +
+          '<td>' + activeCell + '</td>' +
+          '<td>' +
+          '<button class="ant-btn" data-model-edit="' + entry.id + '">编辑</button>' +
+          '<button class="ant-btn" data-model-del="' + entry.id + '">删除</button>' +
+          '</td>';
+        body.appendChild(tr);
+      });
+    }
+
+    function setModelForm(entry) {
+      document.getElementById('modelNameInput').value = entry ? entry.name || '' : '';
+      document.getElementById('modelApiKeyInput').value = entry ? entry.api_key || '' : '';
+      document.getElementById('modelBaseUrlInput').value = entry ? entry.base_url || '' : '';
+      document.getElementById('modelModelInput').value = entry ? entry.model || '' : '';
+      document.getElementById('modelReasoningEnabled').checked = entry ? entry.reasoning_enabled !== false : true;
+      modelEditId = entry ? entry.id : '';
+      document.getElementById('modelFormTitle').textContent = entry ? '编辑模型' : '新增模型';
+    }
+
+    async function saveModelConfigs() {
+      const payload = {
+        models: modelConfigs,
+        active_model_id: activeModelId
+      };
+      const res = await fetch('/api/model_settings', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+      });
+      let data = {};
+      try { data = await res.json(); } catch {}
+      if (!res.ok || data.ok === false) {
+        showMessage(data.error || '保存模型配置失败', 'error');
+        return false;
+      }
+      showMessage('已保存模型配置', 'success');
+      return true;
     }
 
     let mcpServers = [];
@@ -726,28 +886,78 @@ function renderPage() {
       await fetchSummary();
     };
 
-    document.getElementById('saveModel').onclick = async () => {
-      const apiKey = document.getElementById('modelApiKey').value || '';
-      const baseUrl = document.getElementById('modelBaseUrl').value || '';
-      const model = document.getElementById('modelName').value || '';
-      const res = await fetch('/api/model_settings', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ api_key: apiKey, base_url: baseUrl, model })
-      });
-      let data = {};
-      try { data = await res.json(); } catch {}
-      if (!res.ok || data.ok === false) {
-        showMessage(data.error || '保存模型配置失败', 'error');
+    document.getElementById('modelAdd').onclick = () => {
+      setModelForm(null);
+    };
+
+    document.getElementById('modelSave').onclick = async () => {
+      const name = document.getElementById('modelNameInput').value || '';
+      const apiKey = document.getElementById('modelApiKeyInput').value || '';
+      const baseUrl = document.getElementById('modelBaseUrlInput').value || '';
+      const model = document.getElementById('modelModelInput').value || '';
+      const reasoningEnabled = document.getElementById('modelReasoningEnabled').checked;
+      if (!model) {
+        showMessage('模型名称不能为空', 'error');
         return;
       }
-      showMessage('已保存模型配置', 'success');
-      await fetchStatus();
+      const entry = {
+        id: modelEditId || ('model_' + Math.random().toString(36).slice(2, 8)),
+        name: name || model,
+        api_key: apiKey,
+        base_url: baseUrl,
+        model: model,
+        reasoning_enabled: reasoningEnabled
+      };
+      const index = modelConfigs.findIndex(item => item.id === entry.id);
+      if (index >= 0) {
+        modelConfigs[index] = entry;
+      } else {
+        modelConfigs.unshift(entry);
+      }
+      if (!activeModelId) activeModelId = entry.id;
+      if (await saveModelConfigs()) {
+        setModelForm(null);
+        await fetchStatus();
+      }
+    };
+
+    document.getElementById('modelClear').onclick = () => {
+      setModelForm(null);
+    };
+
+    document.getElementById('modelTable').onclick = async (event) => {
+      const target = event.target;
+      if (!target) return;
+      const editId = target.getAttribute('data-model-edit');
+      const delId = target.getAttribute('data-model-del');
+      const activateId = target.getAttribute('data-activate');
+      if (editId) {
+        const entry = modelConfigs.find(item => item.id === editId);
+        if (entry) setModelForm(entry);
+        return;
+      }
+      if (activateId) {
+        activeModelId = activateId;
+        if (await saveModelConfigs()) {
+          await fetchStatus();
+        }
+        return;
+      }
+      if (delId) {
+        modelConfigs = modelConfigs.filter(item => item.id !== delId);
+        if (activeModelId === delId) {
+          activeModelId = (modelConfigs[0] && modelConfigs[0].id) || '';
+        }
+        if (await saveModelConfigs()) {
+          await fetchStatus();
+        }
+      }
     };
 
     document.getElementById('saveRuntime').onclick = async () => {
       const aiTimeout = document.getElementById('aiTimeoutMs').value || '';
       const aiMax = document.getElementById('aiMaxOutputBytes').value || '';
+      const aiToolMax = document.getElementById('aiToolMaxTurns').value || '';
       const cmdTimeout = document.getElementById('commandTimeoutMs').value || '';
       const cmdMax = document.getElementById('commandMaxOutputBytes').value || '';
       const res = await fetch('/api/runtime_settings', {
@@ -756,6 +966,7 @@ function renderPage() {
         body: JSON.stringify({
           ai_timeout_ms: aiTimeout,
           ai_max_output_bytes: aiMax,
+          ai_tool_max_turns: aiToolMax,
           command_timeout_ms: cmdTimeout,
           command_max_output_bytes: cmdMax
         })

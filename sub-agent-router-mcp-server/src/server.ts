@@ -3,12 +3,13 @@ import { z } from 'zod';
 import { SubAgentCatalog } from './catalog.js';
 import { JobStore } from './job-store.js';
 import { ConfigStore } from './config-store.js';
-import { AiConfig, runAi, extractJson } from './ai.js';
+import { AiConfig, runAi, runAiWithTools, extractJson } from './ai.js';
 import { spawnCommand } from './runner.js';
 import { normalizeId, parseCommand } from './utils.js';
 import { AgentSpec, CommandSpec, SkillSpec, McpServerConfig } from './types.js';
 import { ChildProcess } from 'child_process';
 import { pickAgent } from './selector.js';
+import { createMcpToolSession } from './mcp-tools.js';
 
 export interface ServerOptions {
   serverName: string;
@@ -95,6 +96,7 @@ export function createSubAgentRouterServer(options: ServerOptions) {
         commandMaxOutputBytes: maxOutputBytes,
         aiTimeoutMs: ai.timeoutMs,
         aiMaxOutputBytes: ai.maxOutputBytes,
+        aiToolMaxTurns: 100,
       });
       const aiConfig = resolveAiConfig(ai, configStore, runtime);
       if (hasAiConfig(aiConfig)) {
@@ -170,6 +172,7 @@ export function createSubAgentRouterServer(options: ServerOptions) {
         commandMaxOutputBytes: maxOutputBytes,
         aiTimeoutMs: ai.timeoutMs,
         aiMaxOutputBytes: ai.maxOutputBytes,
+        aiToolMaxTurns: 100,
       });
       const mcpServers = configStore.listMcpServers().filter((entry) => entry.enabled);
       const allowPrefixes = resolveAllowPrefixes(input.mcp_allow_prefixes, configStore, mcpServers);
@@ -221,11 +224,53 @@ export function createSubAgentRouterServer(options: ServerOptions) {
       ensureAiConfigured(aiConfig);
       const systemPrompt = buildSystemPrompt(agent, usedSkills, command, catalog, allowPrefixes);
       const prompt = buildPrompt(systemPrompt, input.task);
-      const result = await runAi(aiConfig, {
-        system: systemPrompt,
-        user: input.task,
-        meta: buildAiMeta(agent, command, runContext),
-      });
+      let toolSession: Awaited<ReturnType<typeof createMcpToolSession>> | null = null;
+      try {
+        toolSession = await createMcpToolSession({
+          servers: mcpServers,
+          allowPrefixes,
+          clientName: serverName,
+          clientVersion: '0.2.0',
+        });
+      } catch {
+        toolSession = null;
+      }
+      const useTools = !!toolSession && toolSession.tools.length > 0 && !!aiConfig.http && !aiConfig.command;
+      let result;
+      try {
+        if (useTools) {
+          const toolDefs = toolSession!.tools.map((tool) => ({
+            name: tool.name,
+            description: tool.description,
+            parameters: tool.parameters,
+          }));
+          result = await runAiWithTools(
+            aiConfig,
+            {
+              system: systemPrompt,
+              user: input.task,
+              meta: buildAiMeta(agent, command, runContext),
+            },
+            {
+              tools: toolDefs,
+              callTool: toolSession!.callTool,
+              maxTurns: runtime.aiToolMaxTurns,
+            }
+          );
+        } else {
+          result = await runAi(aiConfig, {
+            system: systemPrompt,
+            user: input.task,
+            meta: buildAiMeta(agent, command, runContext),
+          });
+        }
+      } finally {
+        if (toolSession) {
+          try {
+            await toolSession.close();
+          } catch {}
+        }
+      }
       const status = result.error || result.timedOut || (result.exitCode ?? 0) !== 0 ? 'error' : 'ok';
       const payload = {
         status,
@@ -284,6 +329,7 @@ export function createSubAgentRouterServer(options: ServerOptions) {
         commandMaxOutputBytes: maxOutputBytes,
         aiTimeoutMs: ai.timeoutMs,
         aiMaxOutputBytes: ai.maxOutputBytes,
+        aiToolMaxTurns: 100,
       });
       const mcpServers = configStore.listMcpServers().filter((entry) => entry.enabled);
       const allowPrefixes = resolveAllowPrefixes(input.mcp_allow_prefixes, configStore, mcpServers);
@@ -314,10 +360,50 @@ export function createSubAgentRouterServer(options: ServerOptions) {
           ensureAiConfigured(aiConfig);
           const systemPrompt = buildSystemPrompt(agent, usedSkills, command, catalog, allowPrefixes);
           const prompt = buildPrompt(systemPrompt, input.task);
-          const resultPromise = runAi(aiConfig, {
-            system: systemPrompt,
-            user: input.task,
-            meta: buildAiMeta(agent, command, runContext),
+          let toolSession: Awaited<ReturnType<typeof createMcpToolSession>> | null = null;
+          try {
+            toolSession = await createMcpToolSession({
+              servers: mcpServers,
+              allowPrefixes,
+              clientName: serverName,
+              clientVersion: '0.2.0',
+            });
+          } catch {
+            toolSession = null;
+          }
+          const useTools = !!toolSession && toolSession.tools.length > 0 && !!aiConfig.http && !aiConfig.command;
+          const resultPromise = (async () => {
+            if (useTools) {
+              const toolDefs = toolSession!.tools.map((tool) => ({
+                name: tool.name,
+                description: tool.description,
+                parameters: tool.parameters,
+              }));
+              return await runAiWithTools(
+                aiConfig,
+                {
+                  system: systemPrompt,
+                  user: input.task,
+                  meta: buildAiMeta(agent, command, runContext),
+                },
+                {
+                  tools: toolDefs,
+                  callTool: toolSession!.callTool,
+                  maxTurns: runtime.aiToolMaxTurns,
+                }
+              );
+            }
+            return await runAi(aiConfig, {
+              system: systemPrompt,
+              user: input.task,
+              meta: buildAiMeta(agent, command, runContext),
+            });
+          })().finally(async () => {
+            if (toolSession) {
+              try {
+                await toolSession.close();
+              } catch {}
+            }
           });
           run = {
             child: createVirtualChild(),
@@ -690,11 +776,15 @@ function resolveAiConfig(
   runtime?: {
     aiTimeoutMs: number;
     aiMaxOutputBytes: number;
+    aiToolMaxTurns: number;
   }
 ): AiConfig {
   const current = configStore.getModelConfig();
   const baseUrl = current.baseUrl || 'https://api.openai.com/v1';
-  const http = current.apiKey && current.model ? { apiKey: current.apiKey, baseUrl, model: current.model } : null;
+  const http =
+    current.apiKey && current.model
+      ? { apiKey: current.apiKey, baseUrl, model: current.model, reasoningEnabled: current.reasoningEnabled }
+      : null;
   const command = parseCommand(process.env.SUBAGENT_LLM_CMD);
   return {
     timeoutMs: runtime?.aiTimeoutMs ?? ai.timeoutMs,
@@ -711,6 +801,7 @@ function resolveRuntimeConfig(
     commandMaxOutputBytes: number;
     aiTimeoutMs: number;
     aiMaxOutputBytes: number;
+    aiToolMaxTurns: number;
   }
 ) {
   const runtime = configStore.getRuntimeConfig();
@@ -719,6 +810,7 @@ function resolveRuntimeConfig(
     commandMaxOutputBytes: normalizeRuntimeValue(runtime.commandMaxOutputBytes, defaults.commandMaxOutputBytes),
     aiTimeoutMs: normalizeRuntimeValue(runtime.aiTimeoutMs, defaults.aiTimeoutMs),
     aiMaxOutputBytes: normalizeRuntimeValue(runtime.aiMaxOutputBytes, defaults.aiMaxOutputBytes),
+    aiToolMaxTurns: normalizeRuntimeValue(runtime.aiToolMaxTurns, defaults.aiToolMaxTurns),
   };
 }
 

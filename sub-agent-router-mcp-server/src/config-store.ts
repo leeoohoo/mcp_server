@@ -17,6 +17,15 @@ export interface MarketplaceRecord {
   updatedAt: string;
 }
 
+export interface ModelConfigRecord {
+  id: string;
+  name: string;
+  apiKey: string;
+  baseUrl: string;
+  model: string;
+  reasoningEnabled: boolean;
+}
+
 type DbMcpServerRow = {
   id: string;
   name: string;
@@ -172,32 +181,98 @@ export class ConfigStore {
     this.setSetting('db_path', value);
   }
 
-  getModelConfig(): { apiKey: string; baseUrl: string; model: string } {
-    const fallback = { apiKey: '', baseUrl: '', model: '' };
-    const parsed = this.getSetting('model_config', fallback) as {
-      apiKey?: string;
-      baseUrl?: string;
-      model?: string;
-    };
+  getModelConfig(): { apiKey: string; baseUrl: string; model: string; reasoningEnabled: boolean } {
+    const active = this.getActiveModelConfig();
     return {
-      apiKey: String(parsed?.apiKey || '').trim(),
-      baseUrl: String(parsed?.baseUrl || '').trim(),
-      model: String(parsed?.model || '').trim(),
+      apiKey: active.apiKey,
+      baseUrl: active.baseUrl,
+      model: active.model,
+      reasoningEnabled: active.reasoningEnabled,
     };
   }
 
-  setModelConfig(input: { apiKey?: string; baseUrl?: string; model?: string }) {
+  setModelConfig(input: { apiKey?: string; baseUrl?: string; model?: string; reasoningEnabled?: boolean }) {
     const next = {
       apiKey: String(input?.apiKey || '').trim(),
       baseUrl: String(input?.baseUrl || '').trim(),
       model: String(input?.model || '').trim(),
+      reasoningEnabled: input?.reasoningEnabled !== false,
     };
+    const legacyId = 'default';
+    this.setModelConfigs([
+      {
+        id: legacyId,
+        name: 'Default',
+        apiKey: next.apiKey,
+        baseUrl: next.baseUrl,
+        model: next.model,
+        reasoningEnabled: next.reasoningEnabled,
+      },
+    ]);
+    this.setActiveModelId(legacyId);
     this.setSetting('model_config', next);
+  }
+
+  getModelConfigs(): ModelConfigRecord[] {
+    const parsed = this.getSetting<ModelConfigRecord[]>('model_configs', []);
+    const cleaned = Array.isArray(parsed)
+      ? parsed
+          .map((entry) => normalizeModelConfig(entry))
+          .filter((entry) => entry.model || entry.baseUrl || entry.apiKey)
+      : [];
+    if (cleaned.length > 0) return cleaned;
+    const legacy = this.getSetting('model_config', null) as
+      | { apiKey?: string; baseUrl?: string; model?: string; reasoningEnabled?: boolean }
+      | null;
+    if (!legacy) return [];
+    const apiKey = String(legacy.apiKey || '').trim();
+    const baseUrl = String(legacy.baseUrl || '').trim();
+    const model = String(legacy.model || '').trim();
+    if (!apiKey && !baseUrl && !model) return [];
+    return [
+      {
+        id: 'default',
+        name: 'Default',
+        apiKey,
+        baseUrl,
+        model,
+        reasoningEnabled: legacy.reasoningEnabled !== false,
+      },
+    ];
+  }
+
+  setModelConfigs(list: ModelConfigRecord[]) {
+    const cleaned = Array.isArray(list) ? list.map((entry) => normalizeModelConfig(entry)).filter((entry) => entry.id) : [];
+    this.setSetting('model_configs', cleaned);
+  }
+
+  getActiveModelId(): string {
+    return String(this.getSetting('active_model_id', '') || '').trim();
+  }
+
+  setActiveModelId(id: string) {
+    this.setSetting('active_model_id', String(id || '').trim());
+  }
+
+  getActiveModelConfig(): ModelConfigRecord {
+    const configs = this.getModelConfigs();
+    const activeId = this.getActiveModelId();
+    const found = configs.find((entry) => entry.id === activeId) || configs[0];
+    if (found) return found;
+    return {
+      id: 'default',
+      name: 'Default',
+      apiKey: '',
+      baseUrl: '',
+      model: '',
+      reasoningEnabled: true,
+    };
   }
 
   getRuntimeConfig(): {
     aiTimeoutMs?: number;
     aiMaxOutputBytes?: number;
+    aiToolMaxTurns?: number;
     commandTimeoutMs?: number;
     commandMaxOutputBytes?: number;
   } {
@@ -205,6 +280,7 @@ export class ConfigStore {
     return {
       aiTimeoutMs: parseNumber(parsed?.aiTimeoutMs),
       aiMaxOutputBytes: parseNumber(parsed?.aiMaxOutputBytes),
+      aiToolMaxTurns: parseNumber(parsed?.aiToolMaxTurns),
       commandTimeoutMs: parseNumber(parsed?.commandTimeoutMs),
       commandMaxOutputBytes: parseNumber(parsed?.commandMaxOutputBytes),
     };
@@ -213,12 +289,14 @@ export class ConfigStore {
   setRuntimeConfig(input: {
     aiTimeoutMs?: number;
     aiMaxOutputBytes?: number;
+    aiToolMaxTurns?: number;
     commandTimeoutMs?: number;
     commandMaxOutputBytes?: number;
   }) {
     const next = {
       aiTimeoutMs: sanitizeNumber(input.aiTimeoutMs),
       aiMaxOutputBytes: sanitizeNumber(input.aiMaxOutputBytes),
+      aiToolMaxTurns: sanitizeNumber(input.aiToolMaxTurns),
       commandTimeoutMs: sanitizeNumber(input.commandTimeoutMs),
       commandMaxOutputBytes: sanitizeNumber(input.commandMaxOutputBytes),
     };
@@ -485,4 +563,14 @@ function buildPluginKey(plugin: any): string {
   if (source) return `source:${source}`;
   if (name) return `name:${name}`;
   return JSON.stringify(plugin || {});
+}
+
+function normalizeModelConfig(input: Partial<ModelConfigRecord>): ModelConfigRecord {
+  const id = String(input?.id || '').trim() || `model_${Math.random().toString(36).slice(2, 8)}`;
+  const name = String(input?.name || '').trim() || id;
+  const apiKey = String(input?.apiKey || '').trim();
+  const baseUrl = String(input?.baseUrl || '').trim();
+  const model = String(input?.model || '').trim();
+  const reasoningEnabled = input?.reasoningEnabled !== false;
+  return { id, name, apiKey, baseUrl, model, reasoningEnabled };
 }

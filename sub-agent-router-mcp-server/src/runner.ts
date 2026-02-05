@@ -49,7 +49,7 @@ export function spawnCommand(spec: CommandSpec, context: RunContext, options: Ru
   }
   const [command, ...args] = exec;
   const timeoutMs = typeof options.timeoutMs === 'number' ? options.timeoutMs : 120000;
-  const maxOutputBytes = typeof options.maxOutputBytes === 'number' ? options.maxOutputBytes : 1024 * 1024;
+  const maxOutputBytes = normalizeMaxOutputBytes(options.maxOutputBytes, 1024 * 1024);
 
   const mcpServers = Array.isArray(context.mcpServers) ? context.mcpServers : [];
   const env: Record<string, string> = {
@@ -167,6 +167,13 @@ function resolveExec(value: unknown): string[] {
   return [];
 }
 
+function normalizeMaxOutputBytes(value: unknown, fallback: number): number {
+  const num = typeof value === 'number' ? value : Number(value);
+  if (!Number.isFinite(num)) return fallback;
+  if (num <= 0) return Number.POSITIVE_INFINITY;
+  return num;
+}
+
 function summarizeMcpServer(server: McpServerConfig) {
   return {
     id: server.id,
@@ -190,7 +197,7 @@ export async function runCommandWithInput(
   }
   const [cmd, ...args] = command;
   const timeoutMs = typeof options.timeoutMs === 'number' ? options.timeoutMs : 120000;
-  const maxOutputBytes = typeof options.maxOutputBytes === 'number' ? options.maxOutputBytes : 1024 * 1024;
+  const maxOutputBytes = normalizeMaxOutputBytes(options.maxOutputBytes, 1024 * 1024);
   const startedAt = new Date().toISOString();
   const child = spawn(cmd, args, {
     cwd: process.cwd(),
@@ -292,7 +299,7 @@ export function spawnCommandWithInput(
   }
   const [cmd, ...args] = command;
   const timeoutMs = typeof options.timeoutMs === 'number' ? options.timeoutMs : 120000;
-  const maxOutputBytes = typeof options.maxOutputBytes === 'number' ? options.maxOutputBytes : 1024 * 1024;
+  const maxOutputBytes = normalizeMaxOutputBytes(options.maxOutputBytes, 1024 * 1024);
   const startedAt = new Date().toISOString();
   const child = spawn(cmd, args, {
     cwd: process.cwd(),

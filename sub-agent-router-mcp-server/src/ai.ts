@@ -2,11 +2,13 @@ import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import OpenAI from 'openai';
+import { runAiWithToolsResponses, runOpenAiResponses } from './ai-responses.js';
 import { RunResult, runCommandWithInput } from './runner.js';
 
 export interface AiConfig {
   timeoutMs: number;
   maxOutputBytes: number;
+  maxRetries?: number;
   http?: AiHttpConfig | null;
   command?: string[] | null;
 }
@@ -23,6 +25,7 @@ export interface AiHttpConfig {
   baseUrl: string;
   model: string;
   reasoningEnabled?: boolean;
+  responsesEnabled?: boolean;
 }
 
 export interface AiToolDefinition {
@@ -54,6 +57,7 @@ export async function runAi(
   emitEvent(options.onEvent, 'ai_request', buildRequestEventPayload(config, input, mode));
   let result: RunResult | null = null;
   const maxOutputBytes = normalizeMaxOutputBytes(config.maxOutputBytes);
+  const maxRetries = normalizeMaxRetries(config.maxRetries);
   try {
     if (mode === 'command') {
       const prompt = buildPrompt(input);
@@ -74,7 +78,17 @@ export async function runAi(
     if (!config.http || !config.http.apiKey || !config.http.model) {
       throw new Error('AI command is not configured');
     }
-    result = await runOpenAiSdk(config.http, input, config.timeoutMs, maxOutputBytes, options.signal);
+    if (config.http.responsesEnabled) {
+      result = await runOpenAiResponses(config.http, input, config.timeoutMs, maxOutputBytes, options.signal, {
+        onEvent: options.onEvent,
+        maxRetries,
+      });
+    } else {
+      result = await runOpenAiSdk(config.http, input, config.timeoutMs, maxOutputBytes, options.signal, {
+        onEvent: options.onEvent,
+        maxRetries,
+      });
+    }
     logAiResponse(result, mode);
     emitEvent(options.onEvent, 'ai_response', buildResponseEventPayload(result, mode));
     return result;
@@ -97,9 +111,13 @@ export async function runAiWithTools(
   if (!config.http || !config.http.apiKey || !config.http.model) {
     throw new Error('AI command is not configured');
   }
+  if (config.http.responsesEnabled) {
+    return await runAiWithToolsResponses(config, input, options, runOptions);
+  }
 
   const startedAt = new Date().toISOString();
   const maxOutputBytes = normalizeMaxOutputBytes(config.maxOutputBytes);
+  const maxRetries = normalizeMaxRetries(config.maxRetries);
   const controller = new AbortController();
   let timedOut = false;
   let aborted = false;
@@ -164,7 +182,21 @@ export async function runAiWithTools(
         tool_choice: openAiTools.length > 0 ? 'auto' : undefined,
         stream: false,
       });
-      const response = await client.chat.completions.create(request as any, { signal: controller.signal });
+      const response = await requestWithRetry(
+        () => client.chat.completions.create(request as any, { signal: controller.signal }),
+        {
+          maxRetries,
+          shouldRetry: (err) => shouldRetryAiError(err, controller.signal.aborted),
+          onRetry: (attempt, delayMs, err) => {
+            emitEvent(runOptions.onEvent, 'ai_retry', {
+              step: turn + 1,
+              attempt,
+              delay_ms: delayMs,
+              ...summarizeRetryError(err),
+            });
+          },
+        }
+      );
 
       const choice = response?.choices?.[0];
       const message = choice?.message as any;
@@ -305,7 +337,8 @@ async function runOpenAiSdk(
   input: AiRunInput,
   timeoutMs: number,
   maxOutputBytes: number,
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  options: { onEvent?: AiEventHandler; maxRetries?: number } = {}
 ): Promise<RunResult> {
   const startedAt = new Date().toISOString();
   const controller = new AbortController();
@@ -337,6 +370,8 @@ async function runOpenAiSdk(
   let stdoutTruncated = false;
   let stderrTruncated = false;
   let abortedForTruncation = false;
+  const maxRetries = normalizeMaxRetries(options.maxRetries);
+  let lastError: unknown = null;
   try {
     const baseURL = normalizeBaseUrl(http.baseUrl);
     const client = new OpenAI({
@@ -350,19 +385,53 @@ async function runOpenAiSdk(
       messages,
       stream: true,
     });
-    const stream = (await client.chat.completions.create(request as any, {
-      signal: controller.signal,
-    })) as unknown as AsyncIterable<any>;
-    for await (const chunk of stream) {
-      const delta = chunk?.choices?.[0]?.delta?.content;
-      if (!delta) continue;
-      stdout += delta;
-      if (stdout.length > maxOutputBytes) {
-        stdout = stdout.slice(0, maxOutputBytes);
-        stdoutTruncated = true;
-        abortedForTruncation = true;
-        controller.abort();
+    for (let attempt = 1; attempt <= maxRetries; attempt += 1) {
+      let attemptStdout = '';
+      let attemptTruncated = false;
+      abortedForTruncation = false;
+      try {
+        const stream = (await client.chat.completions.create(request as any, {
+          signal: controller.signal,
+        })) as unknown as AsyncIterable<any>;
+        for await (const chunk of stream) {
+          const delta = chunk?.choices?.[0]?.delta?.content;
+          if (!delta) continue;
+          attemptStdout += delta;
+          if (attemptStdout.length > maxOutputBytes) {
+            attemptStdout = attemptStdout.slice(0, maxOutputBytes);
+            attemptTruncated = true;
+            abortedForTruncation = true;
+            controller.abort();
+            break;
+          }
+        }
+        if (!attemptStdout && !abortedForTruncation) {
+          attemptStdout = '';
+        }
+        stdout = attemptStdout;
+        stdoutTruncated = attemptTruncated;
         break;
+      } catch (err) {
+        lastError = err;
+        if (abortedForTruncation) {
+          stdout = attemptStdout;
+          stdoutTruncated = true;
+          break;
+        }
+        if (
+          attempt < maxRetries &&
+          shouldRetryAiError(err, controller.signal.aborted)
+        ) {
+          const delayMs = computeRetryDelayMs(attempt);
+          emitEvent(options.onEvent, 'ai_retry', {
+            attempt,
+            delay_ms: delayMs,
+            ...summarizeRetryError(err),
+          });
+          await sleep(delayMs);
+          continue;
+        }
+        throw err;
       }
     }
   } catch (err) {
@@ -371,6 +440,9 @@ async function runOpenAiSdk(
         error = 'aborted';
       } else {
         error = err instanceof Error ? err.message : String(err);
+      }
+      if (!error && lastError) {
+        error = lastError instanceof Error ? lastError.message : String(lastError);
       }
       exitCode = 1;
     }
@@ -452,6 +524,128 @@ function resolveClientTimeout(timeoutMs: number): number {
 }
 
 const MAX_CLIENT_TIMEOUT_MS = 2_147_483_647;
+const DEFAULT_AI_MAX_RETRIES = 5;
+
+function normalizeMaxRetries(value: number | undefined): number {
+  const num = typeof value === 'number' ? Math.trunc(value) : DEFAULT_AI_MAX_RETRIES;
+  if (!Number.isFinite(num) || num < 1) return 1;
+  return num;
+}
+
+function shouldRetryAiError(err: unknown, aborted: boolean): boolean {
+  if (aborted) return false;
+  if (!err) return false;
+  const name = (err as any)?.name ? String((err as any).name) : '';
+  if (name.toLowerCase().includes('abort')) return false;
+  const status = getErrorStatus(err);
+  if (status) {
+    if (status === 408 || status === 409 || status === 429) return true;
+    if (status >= 500 && status <= 599) return true;
+    return false;
+  }
+  const code = getErrorCode(err);
+  if (RETRYABLE_ERROR_CODES.has(code)) return true;
+  const message = getErrorMessage(err).toLowerCase();
+  if (message.includes('timeout') || message.includes('timed out')) return true;
+  if (message.includes('rate limit')) return true;
+  if (message.includes('econnreset') || message.includes('socket hang up')) return true;
+  if (message.includes('enotfound') || message.includes('eai_again')) return true;
+  return false;
+}
+
+function summarizeRetryError(err: unknown): Record<string, unknown> {
+  const status = getErrorStatus(err);
+  const code = getErrorCode(err);
+  const message = getErrorMessage(err);
+  const payload: Record<string, unknown> = { error: message };
+  if (status) payload.status = status;
+  if (code) payload.code = code;
+  return payload;
+}
+
+function getErrorStatus(err: unknown): number | null {
+  const raw =
+    (err as any)?.status ??
+    (err as any)?.error?.status ??
+    (err as any)?.response?.status ??
+    (err as any)?.response?.statusCode ??
+    null;
+  const num = typeof raw === 'number' ? raw : Number(raw);
+  if (!Number.isFinite(num)) return null;
+  return num;
+}
+
+function getErrorCode(err: unknown): string {
+  const raw =
+    (err as any)?.code ??
+    (err as any)?.error?.code ??
+    (err as any)?.response?.data?.error?.code ??
+    '';
+  return String(raw || '').toUpperCase();
+}
+
+function getErrorMessage(err: unknown): string {
+  if (!err) return '';
+  const msg =
+    (err as any)?.message ??
+    (err as any)?.error?.message ??
+    (err as any)?.response?.data?.error?.message ??
+    '';
+  return String(msg || err);
+}
+
+const RETRYABLE_ERROR_CODES = new Set([
+  'ECONNRESET',
+  'ETIMEDOUT',
+  'ECONNREFUSED',
+  'EAI_AGAIN',
+  'ENOTFOUND',
+  'EPIPE',
+  'UND_ERR_CONNECT_TIMEOUT',
+  'UND_ERR_HEADERS_TIMEOUT',
+  'UND_ERR_BODY_TIMEOUT',
+  'UND_ERR_CONNECT',
+  'UND_ERR_SOCKET',
+  'UND_ERR_RESPONSE',
+]);
+
+function computeRetryDelayMs(attempt: number): number {
+  const base = 500;
+  const max = 8000;
+  const exp = Math.min(max, base * Math.pow(2, Math.max(0, attempt - 1)));
+  const jitter = exp * (0.5 + Math.random());
+  return Math.round(jitter);
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function requestWithRetry<T>(
+  fn: () => Promise<T>,
+  options: {
+    maxRetries: number;
+    shouldRetry: (err: unknown) => boolean;
+    onRetry?: (attempt: number, delayMs: number, err: unknown) => void;
+  }
+): Promise<T> {
+  const maxRetries = normalizeMaxRetries(options.maxRetries);
+  let lastError: unknown = null;
+  for (let attempt = 1; attempt <= maxRetries; attempt += 1) {
+    try {
+      return await fn();
+    } catch (err) {
+      lastError = err;
+      if (attempt >= maxRetries || !options.shouldRetry(err)) {
+        throw err;
+      }
+      const delayMs = computeRetryDelayMs(attempt);
+      if (options.onRetry) options.onRetry(attempt, delayMs, err);
+      await sleep(delayMs);
+    }
+  }
+  throw lastError;
+}
 
 function applyReasoningSettings(http: AiHttpConfig, request: Record<string, unknown>): Record<string, unknown> {
   if (!http) return request;
@@ -492,6 +686,7 @@ function buildRequestEventPayload(
       mode,
       timeout_ms: config.timeoutMs,
       max_output_bytes: config.maxOutputBytes,
+      max_retries: config.maxRetries,
       command: config.command || [],
       input: sanitizeAiInput(input, { includePrompt: true }),
     };
@@ -501,9 +696,11 @@ function buildRequestEventPayload(
     mode,
     timeout_ms: config.timeoutMs,
     max_output_bytes: config.maxOutputBytes,
+    max_retries: config.maxRetries,
     model: http.model || '',
     base_url: normalizeBaseUrl(http.baseUrl || ''),
     reasoning_enabled: http.reasoningEnabled,
+    responses_enabled: http.responsesEnabled,
     input: sanitizeAiInput(input, { includeMessages: true }),
   };
 }
@@ -520,9 +717,11 @@ function buildToolRequestEventPayload(
     step,
     timeout_ms: config.timeoutMs,
     max_output_bytes: config.maxOutputBytes,
+    max_retries: config.maxRetries,
     model: config.http?.model || '',
     base_url: baseUrl,
     reasoning_enabled: config.http?.reasoningEnabled,
+    responses_enabled: config.http?.responsesEnabled,
     messages: sanitizeMessages(messages),
     tools: sanitizeTools(tools),
   };
@@ -566,6 +765,7 @@ function logAiRequest(config: AiConfig, input: AiRunInput, mode: 'command' | 'ht
     mode,
     timeout_ms: config.timeoutMs,
     max_output_bytes: config.maxOutputBytes,
+    max_retries: config.maxRetries,
   };
   if (mode === 'command') {
     payload.command = config.command || [];
@@ -575,6 +775,7 @@ function logAiRequest(config: AiConfig, input: AiRunInput, mode: 'command' | 'ht
     payload.model = http.model || '';
     payload.base_url = normalizeBaseUrl(http.baseUrl || '');
     payload.reasoning_enabled = http.reasoningEnabled;
+    payload.responses_enabled = http.responsesEnabled;
     payload.input = sanitizeAiInput(input, { includeMessages: true });
   }
   logAi(payload, 'request');
@@ -596,9 +797,11 @@ function logAiRequestWithMessages(
       step,
       timeout_ms: config.timeoutMs,
       max_output_bytes: config.maxOutputBytes,
+      max_retries: config.maxRetries,
       model: config.http?.model || '',
       base_url: baseUrl,
       reasoning_enabled: config.http?.reasoningEnabled,
+      responses_enabled: config.http?.responsesEnabled,
       messages: sanitizeMessages(messages),
       tools: sanitizeTools(tools),
     },

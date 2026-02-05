@@ -24,6 +24,7 @@ export interface ModelConfigRecord {
   baseUrl: string;
   model: string;
   reasoningEnabled: boolean;
+  responsesEnabled: boolean;
 }
 
 type DbMcpServerRow = {
@@ -181,22 +182,24 @@ export class ConfigStore {
     this.setSetting('db_path', value);
   }
 
-  getModelConfig(): { apiKey: string; baseUrl: string; model: string; reasoningEnabled: boolean } {
+  getModelConfig(): { apiKey: string; baseUrl: string; model: string; reasoningEnabled: boolean; responsesEnabled: boolean } {
     const active = this.getActiveModelConfig();
     return {
       apiKey: active.apiKey,
       baseUrl: active.baseUrl,
       model: active.model,
       reasoningEnabled: active.reasoningEnabled,
+      responsesEnabled: active.responsesEnabled,
     };
   }
 
-  setModelConfig(input: { apiKey?: string; baseUrl?: string; model?: string; reasoningEnabled?: boolean }) {
+  setModelConfig(input: { apiKey?: string; baseUrl?: string; model?: string; reasoningEnabled?: boolean; responsesEnabled?: boolean }) {
     const next = {
       apiKey: String(input?.apiKey || '').trim(),
       baseUrl: String(input?.baseUrl || '').trim(),
       model: String(input?.model || '').trim(),
       reasoningEnabled: input?.reasoningEnabled !== false,
+      responsesEnabled: input?.responsesEnabled === true,
     };
     const legacyId = 'default';
     this.setModelConfigs([
@@ -207,6 +210,7 @@ export class ConfigStore {
         baseUrl: next.baseUrl,
         model: next.model,
         reasoningEnabled: next.reasoningEnabled,
+        responsesEnabled: next.responsesEnabled,
       },
     ]);
     this.setActiveModelId(legacyId);
@@ -222,7 +226,7 @@ export class ConfigStore {
       : [];
     if (cleaned.length > 0) return cleaned;
     const legacy = this.getSetting('model_config', null) as
-      | { apiKey?: string; baseUrl?: string; model?: string; reasoningEnabled?: boolean }
+      | { apiKey?: string; baseUrl?: string; model?: string; reasoningEnabled?: boolean; responsesEnabled?: boolean }
       | null;
     if (!legacy) return [];
     const apiKey = String(legacy.apiKey || '').trim();
@@ -237,6 +241,7 @@ export class ConfigStore {
         baseUrl,
         model,
         reasoningEnabled: legacy.reasoningEnabled !== false,
+        responsesEnabled: legacy.responsesEnabled === true,
       },
     ];
   }
@@ -266,6 +271,7 @@ export class ConfigStore {
       baseUrl: '',
       model: '',
       reasoningEnabled: true,
+      responsesEnabled: false,
     };
   }
 
@@ -273,6 +279,7 @@ export class ConfigStore {
     aiTimeoutMs?: number;
     aiMaxOutputBytes?: number;
     aiToolMaxTurns?: number;
+    aiMaxRetries?: number;
     commandTimeoutMs?: number;
     commandMaxOutputBytes?: number;
   } {
@@ -281,6 +288,7 @@ export class ConfigStore {
       aiTimeoutMs: parseNumber(parsed?.aiTimeoutMs),
       aiMaxOutputBytes: parseNumber(parsed?.aiMaxOutputBytes),
       aiToolMaxTurns: parseNumber(parsed?.aiToolMaxTurns),
+      aiMaxRetries: parseNumber(parsed?.aiMaxRetries),
       commandTimeoutMs: parseNumber(parsed?.commandTimeoutMs),
       commandMaxOutputBytes: parseNumber(parsed?.commandMaxOutputBytes),
     };
@@ -290,6 +298,7 @@ export class ConfigStore {
     aiTimeoutMs?: number;
     aiMaxOutputBytes?: number;
     aiToolMaxTurns?: number;
+    aiMaxRetries?: number;
     commandTimeoutMs?: number;
     commandMaxOutputBytes?: number;
   }) {
@@ -297,6 +306,7 @@ export class ConfigStore {
       aiTimeoutMs: sanitizeNumber(input.aiTimeoutMs),
       aiMaxOutputBytes: sanitizeNumber(input.aiMaxOutputBytes),
       aiToolMaxTurns: sanitizeNumber(input.aiToolMaxTurns),
+      aiMaxRetries: sanitizeNumber(input.aiMaxRetries),
       commandTimeoutMs: sanitizeNumber(input.commandTimeoutMs),
       commandMaxOutputBytes: sanitizeNumber(input.commandMaxOutputBytes),
     };
@@ -572,5 +582,6 @@ function normalizeModelConfig(input: Partial<ModelConfigRecord>): ModelConfigRec
   const baseUrl = String(input?.baseUrl || '').trim();
   const model = String(input?.model || '').trim();
   const reasoningEnabled = input?.reasoningEnabled !== false;
-  return { id, name, apiKey, baseUrl, model, reasoningEnabled };
+  const responsesEnabled = input?.responsesEnabled === true;
+  return { id, name, apiKey, baseUrl, model, reasoningEnabled, responsesEnabled };
 }

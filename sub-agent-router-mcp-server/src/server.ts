@@ -92,13 +92,14 @@ export function createSubAgentRouterServer(options: ServerOptions) {
       const pool = filtered.length > 0 ? filtered : agents;
 
       let suggestion = null as null | { agentId: string; skills: string[]; reason: string };
-      const runtime = resolveRuntimeConfig(configStore, {
-        commandTimeoutMs: timeoutMs,
-        commandMaxOutputBytes: maxOutputBytes,
-        aiTimeoutMs: ai.timeoutMs,
-        aiMaxOutputBytes: ai.maxOutputBytes,
-        aiToolMaxTurns: 100,
-      });
+  const runtime = resolveRuntimeConfig(configStore, {
+    commandTimeoutMs: timeoutMs,
+    commandMaxOutputBytes: maxOutputBytes,
+    aiTimeoutMs: ai.timeoutMs,
+    aiMaxOutputBytes: ai.maxOutputBytes,
+    aiMaxRetries: ai.maxRetries ?? 5,
+    aiToolMaxTurns: 100,
+  });
       const aiConfig = resolveAiConfig(ai, configStore, runtime);
       if (hasAiConfig(aiConfig)) {
         suggestion = await suggestWithAi({
@@ -182,13 +183,14 @@ export function createSubAgentRouterServer(options: ServerOptions) {
       });
 
       try {
-      const runtime = resolveRuntimeConfig(configStore, {
-        commandTimeoutMs: timeoutMs,
-        commandMaxOutputBytes: maxOutputBytes,
-        aiTimeoutMs: ai.timeoutMs,
-        aiMaxOutputBytes: ai.maxOutputBytes,
-        aiToolMaxTurns: 100,
-      });
+  const runtime = resolveRuntimeConfig(configStore, {
+    commandTimeoutMs: timeoutMs,
+    commandMaxOutputBytes: maxOutputBytes,
+    aiTimeoutMs: ai.timeoutMs,
+    aiMaxOutputBytes: ai.maxOutputBytes,
+    aiMaxRetries: ai.maxRetries ?? 5,
+    aiToolMaxTurns: 100,
+  });
       const mcpServers = configStore.listMcpServers().filter((entry) => entry.enabled);
       const allowPrefixes = resolveAllowPrefixes(input.mcp_allow_prefixes, configStore, mcpServers);
       const runContext = {
@@ -580,6 +582,7 @@ function resolveAiConfig(
   runtime?: {
     aiTimeoutMs: number;
     aiMaxOutputBytes: number;
+    aiMaxRetries: number;
     aiToolMaxTurns: number;
   }
 ): AiConfig {
@@ -587,12 +590,19 @@ function resolveAiConfig(
   const baseUrl = current.baseUrl || 'https://api.openai.com/v1';
   const http =
     current.apiKey && current.model
-      ? { apiKey: current.apiKey, baseUrl, model: current.model, reasoningEnabled: current.reasoningEnabled }
+      ? {
+          apiKey: current.apiKey,
+          baseUrl,
+          model: current.model,
+          reasoningEnabled: current.reasoningEnabled,
+          responsesEnabled: current.responsesEnabled,
+        }
       : null;
   const command = parseCommand(process.env.SUBAGENT_LLM_CMD);
   return {
     timeoutMs: runtime?.aiTimeoutMs ?? ai.timeoutMs,
     maxOutputBytes: runtime?.aiMaxOutputBytes ?? ai.maxOutputBytes,
+    maxRetries: runtime?.aiMaxRetries ?? ai.maxRetries,
     http,
     command: Array.isArray(command) && command.length > 0 ? command : null,
   };
@@ -605,6 +615,7 @@ function resolveRuntimeConfig(
     commandMaxOutputBytes: number;
     aiTimeoutMs: number;
     aiMaxOutputBytes: number;
+    aiMaxRetries: number;
     aiToolMaxTurns: number;
   }
 ) {
@@ -614,6 +625,7 @@ function resolveRuntimeConfig(
     commandMaxOutputBytes: normalizeRuntimeValue(runtime.commandMaxOutputBytes, defaults.commandMaxOutputBytes),
     aiTimeoutMs: normalizeRuntimeValue(runtime.aiTimeoutMs, defaults.aiTimeoutMs),
     aiMaxOutputBytes: normalizeRuntimeValue(runtime.aiMaxOutputBytes, defaults.aiMaxOutputBytes),
+    aiMaxRetries: normalizeRuntimeValue(runtime.aiMaxRetries, defaults.aiMaxRetries),
     aiToolMaxTurns: normalizeRuntimeValue(runtime.aiToolMaxTurns, defaults.aiToolMaxTurns),
   };
 }

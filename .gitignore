@@ -2,7 +2,8 @@
 node_modules/
 /node_modules/
 /dist/
-
+/docs/
+docs/
 dist/
 /dist/
 doc/

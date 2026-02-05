@@ -83,6 +83,7 @@ export function startAdminServer(options: AdminServerOptions) {
             base_url: modelConfig.baseUrl,
             model: modelConfig.model,
             reasoning_enabled: modelConfig.reasoningEnabled,
+            responses_enabled: modelConfig.responsesEnabled,
           },
           model_configs: modelConfigs.map((entry) => ({
             id: entry.id,
@@ -91,6 +92,7 @@ export function startAdminServer(options: AdminServerOptions) {
             base_url: entry.baseUrl,
             model: entry.model,
             reasoning_enabled: entry.reasoningEnabled,
+            responses_enabled: entry.responsesEnabled,
           })),
           active_model_id: activeModelId,
           runtime_config: runtimeConfig,
@@ -126,6 +128,7 @@ export function startAdminServer(options: AdminServerOptions) {
             baseUrl: entry?.base_url,
             model: entry?.model,
             reasoningEnabled: entry?.reasoning_enabled !== false,
+            responsesEnabled: entry?.responses_enabled === true,
           }));
           options.configStore.setModelConfigs(models);
           if (typeof body?.active_model_id === 'string') {
@@ -136,7 +139,8 @@ export function startAdminServer(options: AdminServerOptions) {
           const baseUrl = typeof body?.base_url === 'string' ? body.base_url.trim() : '';
           const model = typeof body?.model === 'string' ? body.model.trim() : '';
           const reasoningEnabled = body?.reasoning_enabled !== false;
-          options.configStore.setModelConfig({ apiKey, baseUrl, model, reasoningEnabled });
+          const responsesEnabled = body?.responses_enabled === true;
+          options.configStore.setModelConfig({ apiKey, baseUrl, model, reasoningEnabled, responsesEnabled });
         }
         return sendJson(res, { ok: true });
       }
@@ -146,6 +150,7 @@ export function startAdminServer(options: AdminServerOptions) {
           aiTimeoutMs: body?.ai_timeout_ms,
           aiMaxOutputBytes: body?.ai_max_output_bytes,
           aiToolMaxTurns: body?.ai_tool_max_turns,
+          aiMaxRetries: body?.ai_max_retries,
           commandTimeoutMs: body?.command_timeout_ms,
           commandMaxOutputBytes: body?.command_max_output_bytes,
         });
@@ -538,7 +543,7 @@ function renderPage() {
               <div class="table-responsive">
                 <table id="modelTable" class="table table-sm table-hover align-middle">
                   <thead>
-                    <tr><th>名称</th><th>Model</th><th>Base URL</th><th>推理</th><th>当前</th><th>操作</th></tr>
+                    <tr><th>名称</th><th>Model</th><th>Base URL</th><th>推理</th><th>Responses</th><th>当前</th><th>操作</th></tr>
                   </thead>
                   <tbody></tbody>
                 </table>
@@ -568,6 +573,7 @@ function renderPage() {
             </div>
             <div class="field-row inline">
               <label><input id="modelReasoningEnabled" type="checkbox" /> 启用推理</label>
+              <label><input id="modelResponsesEnabled" type="checkbox" /> Responses 模式</label>
             </div>
             <div class="field-row inline">
               <button id="modelSave" class="btn btn-primary btn-sm">保存模型</button>
@@ -588,6 +594,10 @@ function renderPage() {
             <div class="field-row">
               <label>AI Tool Max Turns</label>
               <input id="aiToolMaxTurns" class="form-control form-control-sm" placeholder="100" />
+            </div>
+            <div class="field-row">
+              <label>AI Max Retries (0=不重试)</label>
+              <input id="aiMaxRetries" class="form-control form-control-sm" placeholder="5" />
             </div>
             <div class="field-row">
               <label>Command Timeout (ms, 0=无限)</label>
@@ -841,6 +851,7 @@ function renderPage() {
       document.getElementById('aiTimeoutMs').value = valueOrEmpty(data.runtime_config && data.runtime_config.aiTimeoutMs);
       document.getElementById('aiMaxOutputBytes').value = valueOrEmpty(data.runtime_config && data.runtime_config.aiMaxOutputBytes);
       document.getElementById('aiToolMaxTurns').value = valueOrEmpty(data.runtime_config && data.runtime_config.aiToolMaxTurns);
+      document.getElementById('aiMaxRetries').value = valueOrEmpty(data.runtime_config && data.runtime_config.aiMaxRetries);
       document.getElementById('commandTimeoutMs').value = valueOrEmpty(data.runtime_config && data.runtime_config.commandTimeoutMs);
       document.getElementById('commandMaxOutputBytes').value = valueOrEmpty(data.runtime_config && data.runtime_config.commandMaxOutputBytes);
       document.getElementById('marketplacePath').textContent = 'marketplace 路径: ' + (data.marketplace_path || '');
@@ -1016,6 +1027,7 @@ function renderPage() {
         ai_request: 'AI 请求',
         ai_response: 'AI 响应',
         ai_error: 'AI 错误',
+        ai_retry: 'AI 重试',
         tool_call: '工具调用',
         tool_result: '工具结果'
       };
@@ -1136,7 +1148,8 @@ function renderPage() {
           api_key: legacy.api_key || '',
           base_url: legacy.base_url || '',
           model: legacy.model || '',
-          reasoning_enabled: legacy.reasoning_enabled !== false
+          reasoning_enabled: legacy.reasoning_enabled !== false,
+          responses_enabled: legacy.responses_enabled === true
         }];
       }
       modelConfigs = list.map(entry => normalizeModelEntry(entry));
@@ -1152,7 +1165,8 @@ function renderPage() {
         api_key: String(entry.api_key || ''),
         base_url: String(entry.base_url || ''),
         model: String(entry.model || ''),
-        reasoning_enabled: entry.reasoning_enabled !== false
+        reasoning_enabled: entry.reasoning_enabled !== false,
+        responses_enabled: entry.responses_enabled === true
       };
     }
 
@@ -1162,12 +1176,14 @@ function renderPage() {
       modelConfigs.forEach(entry => {
         const tr = document.createElement('tr');
         const reasoning = entry.reasoning_enabled ? '开' : '关';
+        const responses = entry.responses_enabled ? '开' : '关';
         const active = entry.id === activeModelId;
         const activeCell = active ? '<span class="badge text-bg-primary">当前</span>' : '<button class="btn btn-outline-primary btn-sm" data-activate="' + entry.id + '">设为当前</button>';
         tr.innerHTML = '<td>' + entry.name + '</td>' +
           '<td>' + entry.model + '</td>' +
           '<td>' + entry.base_url + '</td>' +
           '<td>' + reasoning + '</td>' +
+          '<td>' + responses + '</td>' +
           '<td>' + activeCell + '</td>' +
           '<td>' +
           '<button class="btn btn-outline-secondary btn-sm" data-model-edit="' + entry.id + '">编辑</button>' +
@@ -1183,6 +1199,7 @@ function renderPage() {
       document.getElementById('modelBaseUrlInput').value = entry ? entry.base_url || '' : '';
       document.getElementById('modelModelInput').value = entry ? entry.model || '' : '';
       document.getElementById('modelReasoningEnabled').checked = entry ? entry.reasoning_enabled !== false : true;
+      document.getElementById('modelResponsesEnabled').checked = entry ? entry.responses_enabled === true : false;
       modelEditId = entry ? entry.id : '';
       document.getElementById('modelFormTitle').textContent = entry ? '编辑模型' : '新增模型';
     }
@@ -1305,6 +1322,7 @@ function renderPage() {
       const baseUrl = document.getElementById('modelBaseUrlInput').value || '';
       const model = document.getElementById('modelModelInput').value || '';
       const reasoningEnabled = document.getElementById('modelReasoningEnabled').checked;
+      const responsesEnabled = document.getElementById('modelResponsesEnabled').checked;
       if (!model) {
         showMessage('模型名称不能为空', 'error');
         return;
@@ -1315,7 +1333,8 @@ function renderPage() {
         api_key: apiKey,
         base_url: baseUrl,
         model: model,
-        reasoning_enabled: reasoningEnabled
+        reasoning_enabled: reasoningEnabled,
+        responses_enabled: responsesEnabled
       };
       const index = modelConfigs.findIndex(item => item.id === entry.id);
       if (index >= 0) {
@@ -1367,6 +1386,7 @@ function renderPage() {
       const aiTimeout = document.getElementById('aiTimeoutMs').value || '';
       const aiMax = document.getElementById('aiMaxOutputBytes').value || '';
       const aiToolMax = document.getElementById('aiToolMaxTurns').value || '';
+      const aiMaxRetries = document.getElementById('aiMaxRetries').value || '';
       const cmdTimeout = document.getElementById('commandTimeoutMs').value || '';
       const cmdMax = document.getElementById('commandMaxOutputBytes').value || '';
       const res = await fetch('/api/runtime_settings', {
@@ -1376,6 +1396,7 @@ function renderPage() {
           ai_timeout_ms: aiTimeout,
           ai_max_output_bytes: aiMax,
           ai_tool_max_turns: aiToolMax,
+          ai_max_retries: aiMaxRetries,
           command_timeout_ms: cmdTimeout,
           command_max_output_bytes: cmdMax
         })

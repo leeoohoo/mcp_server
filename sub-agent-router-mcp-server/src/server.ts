@@ -169,7 +169,19 @@ export function createSubAgentRouterServer(options: ServerOptions) {
       if (!command && !agent.systemPromptPath) {
         throw new Error(`Sub-agent ${agent.id} has no runnable prompt or command.`);
       }
+      const job = jobStore.createJob({
+        task: input.task,
+        agentId: agent.id,
+        commandId: command?.id || null,
+        payload: input,
+      });
+      jobStore.updateJobStatus(job.id, 'running', null, null);
+      jobStore.appendEvent(job.id, 'start', {
+        agent_id: agent.id,
+        command_id: command?.id || null,
+      });
 
+      try {
       const runtime = resolveRuntimeConfig(configStore, {
         commandTimeoutMs: timeoutMs,
         commandMaxOutputBytes: maxOutputBytes,
@@ -204,6 +216,7 @@ export function createSubAgentRouterServer(options: ServerOptions) {
         const status = result.error || result.timedOut || (result.exitCode ?? 0) !== 0 ? 'error' : 'ok';
         const payload = {
           status,
+          job_id: job.id,
           agent_id: agent.id,
           agent_name: agent.name,
           command_id: command.id,
@@ -221,6 +234,13 @@ export function createSubAgentRouterServer(options: ServerOptions) {
           error: result.error,
           timed_out: result.timedOut,
         };
+        const jobStatus = status === 'ok' ? 'done' : 'error';
+        jobStore.updateJobStatus(job.id, jobStatus, JSON.stringify(payload), result.error);
+        jobStore.appendEvent(job.id, 'finish', {
+          status: jobStatus,
+          exit_code: result.exitCode,
+          signal: result.signal,
+        });
         return textResult(withChatos(serverName, 'run_sub_agent', payload, status));
       }
 
@@ -284,6 +304,7 @@ export function createSubAgentRouterServer(options: ServerOptions) {
       const status = result.error || result.timedOut || (result.exitCode ?? 0) !== 0 ? 'error' : 'ok';
       const payload = {
         status,
+        job_id: job.id,
         agent_id: agent.id,
         agent_name: agent.name,
         command_id: command?.id || null,
@@ -301,7 +322,20 @@ export function createSubAgentRouterServer(options: ServerOptions) {
         error: result.error,
         timed_out: result.timedOut,
       };
+      const jobStatus = status === 'ok' ? 'done' : 'error';
+      jobStore.updateJobStatus(job.id, jobStatus, JSON.stringify(payload), result.error);
+      jobStore.appendEvent(job.id, 'finish', {
+        status: jobStatus,
+        exit_code: result.exitCode,
+        signal: result.signal,
+      });
       return textResult(withChatos(serverName, 'run_sub_agent', payload, status));
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        jobStore.updateJobStatus(job.id, 'error', null, message);
+        jobStore.appendEvent(job.id, 'finish_error', { error: message });
+        throw err;
+      }
     }
   );
 

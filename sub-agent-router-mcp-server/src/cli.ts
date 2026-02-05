@@ -124,6 +124,7 @@ async function main() {
       host: adminHost,
       port: adminPort,
       configStore,
+      jobStore,
       catalog,
       marketplacePath,
       pluginsRoot,

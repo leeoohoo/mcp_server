@@ -246,6 +246,57 @@ export class JobStore {
     });
   }
 
+  listJobs(options: {
+    sessionId?: string;
+    status?: JobStatus;
+    limit?: number;
+    allSessions?: boolean;
+  } = {}): JobRecord[] {
+    const where: string[] = [];
+    const params: Record<string, unknown> = {};
+    const status = typeof options.status === 'string' ? options.status.trim().toLowerCase() : '';
+    if (status) {
+      where.push('status = @status');
+      params.status = status;
+    }
+    if (!options.allSessions) {
+      const sessionId = normalizeId(options.sessionId) || this.defaultSessionId;
+      if (sessionId) {
+        where.push('session_id = @session_id');
+        params.session_id = sessionId;
+      }
+    }
+    const limit =
+      typeof options.limit === 'number' && Number.isFinite(options.limit) && options.limit > 0
+        ? Math.trunc(options.limit)
+        : 200;
+    params.limit = limit;
+
+    const whereSql = where.length > 0 ? `WHERE ${where.join(' AND ')}` : '';
+    const stmt = this.db.prepare(
+      `SELECT * FROM subagent_jobs ${whereSql} ORDER BY created_at DESC LIMIT @limit`
+    );
+    const rows = stmt.all(params) as DbJobRow[];
+    return rows.map((row) => this.fromJobRow(row));
+  }
+
+  listSessions(limit = 50): Array<{ sessionId: string; count: number; lastCreatedAt: string }> {
+    const max = Number.isFinite(limit) && limit > 0 ? Math.trunc(limit) : 50;
+    const stmt = this.db.prepare(`
+      SELECT session_id as session_id, COUNT(*) as count, MAX(created_at) as last_created_at
+      FROM subagent_jobs
+      GROUP BY session_id
+      ORDER BY last_created_at DESC
+      LIMIT ?
+    `);
+    const rows = stmt.all(max) as Array<{ session_id: string; count: number; last_created_at: string }>;
+    return rows.map((row) => ({
+      sessionId: row.session_id,
+      count: row.count,
+      lastCreatedAt: row.last_created_at,
+    }));
+  }
+
   private fromJobRow(row: DbJobRow): JobRecord {
     return {
       id: row.id,

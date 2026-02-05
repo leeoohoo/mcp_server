@@ -3,6 +3,7 @@ import fs from 'fs';
 import path from 'path';
 import { spawn } from 'child_process';
 import { ConfigStore } from './config-store.js';
+import { JobStore } from './job-store.js';
 import { SubAgentCatalog } from './catalog.js';
 import { parseCommand } from './utils.js';
 
@@ -10,6 +11,7 @@ export interface AdminServerOptions {
   host: string;
   port: number;
   configStore: ConfigStore;
+  jobStore?: JobStore;
   catalog: SubAgentCatalog;
   marketplacePath?: string;
   pluginsRoot?: string;
@@ -56,6 +58,7 @@ export function startAdminServer(options: AdminServerOptions) {
   const server = http.createServer(async (req, res) => {
     try {
       const url = req.url || '/';
+      const pathname = url.split('?')[0];
       if (req.method === 'GET' && url === '/') {
         res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
         res.end(renderPage());
@@ -153,6 +156,31 @@ export function startAdminServer(options: AdminServerOptions) {
         const prefixes = Array.isArray(body?.prefixes) ? body.prefixes : [];
         options.configStore.setAllowPrefixes(prefixes);
         return sendJson(res, { ok: true });
+      }
+      if (req.method === 'GET' && pathname === '/api/jobs') {
+        if (!options.jobStore) {
+          return sendJson(res, { ok: false, error: 'job store not configured' }, 500);
+        }
+        const parsed = new URL(url, 'http://localhost');
+        const status = parsed.searchParams.get('status') || '';
+        const sessionId = parsed.searchParams.get('session_id') || '';
+        const limit = Number(parsed.searchParams.get('limit') || '');
+        const allSessions =
+          parsed.searchParams.get('all_sessions') === '1' || parsed.searchParams.get('all_sessions') === 'true';
+        const jobs = options.jobStore.listJobs({
+          sessionId,
+          status: status ? (status as any) : undefined,
+          limit: Number.isFinite(limit) ? limit : undefined,
+          allSessions,
+        });
+        return sendJson(res, { ok: true, jobs });
+      }
+      if (req.method === 'GET' && pathname === '/api/job_sessions') {
+        if (!options.jobStore) {
+          return sendJson(res, { ok: false, error: 'job store not configured' }, 500);
+        }
+        const sessions = options.jobStore.listSessions();
+        return sendJson(res, { ok: true, sessions });
       }
       if (req.method === 'GET' && url === '/api/mcp_servers') {
         return sendJson(res, { servers: options.configStore.listMcpServers() });
@@ -341,178 +369,171 @@ function renderPage() {
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Sub-agent Router Config</title>
-  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/antd@5/dist/reset.css" />
-  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/antd@5/dist/antd.min.css" />
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.8/dist/css/bootstrap.min.css" integrity="sha384-sRIl4kxILFvY47J16cr9ZwB07vP4J8+LH7qKQnuqkuIAvNWLzeN8tE5YBujZqJLB" crossorigin="anonymous" />
   <style>
     :root {
-      --bg: #f3f5f8;
-      --card: #fff;
-      --text: #1f2a44;
-      --muted: #6b7280;
-      --border: #dde2ea;
-      --primary: #1677ff;
+      --app-bg: #f6f7fb;
+      --app-muted: #64748b;
     }
-    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; margin: 0; background: var(--bg); color: var(--text); }
-    .page { max-width: 1200px; margin: 24px auto 40px; padding: 0 16px; }
-    .page-header { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-bottom: 12px; }
+    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; margin: 0; background: var(--app-bg); color: #0f172a; }
+    .page { max-width: 1240px; }
+    .page-header { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-bottom: 16px; }
     h1 { font-size: 20px; margin: 0; }
-    nav.tabs { display: flex; gap: 8px; margin: 12px 0 16px; }
-    .tab-btn { border: 1px solid var(--border); background: #eef2f7; color: #475569; border-radius: 8px; padding: 6px 14px; cursor: pointer; }
-    .tab-btn.is-active { background: var(--primary); border-color: var(--primary); color: #fff; }
+    nav.tabs { display: flex; gap: 8px; margin: 12px 0 16px; flex-wrap: wrap; }
+    nav.tabs.sub-tabs { margin-top: 6px; }
+    nav.tabs .tab-btn { border-radius: 999px; }
     .tab { display: none; }
     .tab.active { display: block; }
-    .grid-2 { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; }
-    .grid-1 { display: grid; grid-template-columns: 1fr; gap: 16px; }
+    .subtab { display: none; }
+    .subtab.active { display: block; }
+    .grid-2 { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 20px; }
+    .grid-1 { display: grid; grid-template-columns: 1fr; gap: 20px; }
     @media (max-width: 1000px) { .grid-2 { grid-template-columns: 1fr; } }
     label { display: block; margin: 10px 0 6px; font-weight: 600; }
     textarea, input, select { width: 100%; max-width: 100%; }
-    button { margin-top: 8px; }
-    table { border-collapse: collapse; margin-top: 12px; width: 100%; background: #fff; }
-    td, th { border: 1px solid #eee; padding: 6px 8px; text-align: left; vertical-align: top; }
-    .row { margin-bottom: 12px; }
-    .muted { color: var(--muted); font-size: 12px; }
-    .badge { display: inline-block; padding: 2px 8px; border-radius: 6px; background: #f0f0f0; margin-right: 6px; }
+    .field-row { margin-bottom: 12px; }
+    .muted { color: var(--app-muted); font-size: 0.875rem; }
     .missing { color: #b00020; }
     details { margin: 8px 0; }
     .inline { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
-    .inline input, .inline select { flex: 1; min-width: 140px; }
+    .inline .form-control, .inline .form-select { flex: 1; min-width: 160px; }
     .inline label { margin: 0; font-weight: 400; }
-    .message { margin: 10px 0 16px; padding: 6px 10px; border-radius: 4px; border: 1px solid transparent; }
-    .message.error { background: #fff1f1; color: #b00020; border-color: #f0caca; }
-    .message.success { background: #f1fff4; color: #0a6; border-color: #cde9d6; }
-    .card { background: var(--card); padding: 16px; border-radius: 12px; box-shadow: 0 1px 2px rgba(0,0,0,0.04); border: 1px solid #e4e8f0; }
-    .card + .card { margin-top: 16px; }
+    .alert { margin: 10px 0 16px; }
+    .card { padding: 16px; border-radius: 14px; border: 0; box-shadow: 0 8px 24px rgba(15, 23, 42, 0.08); }
     .list { margin: 6px 0 0; padding-left: 18px; }
     .list li { margin: 4px 0; }
     .section-title { font-weight: 600; margin-bottom: 6px; }
-    .table-wrap { width: 100%; overflow: auto; }
-    .ant-btn { border-radius: 6px; }
-    .status-badge { display: inline-flex; align-items: center; padding: 4px 10px; border-radius: 999px; background: #e7f4ff; color: var(--primary); border: 1px solid #b6daff; font-size: 12px; }
     .modal { display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.35); align-items: center; justify-content: center; z-index: 1000; }
     .modal.active { display: flex; }
     .modal-content { width: min(900px, 92vw); max-height: 90vh; overflow: auto; }
     .modal-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; }
-    .modal-body .row { margin-bottom: 12px; }
+    .modal-body .field-row { margin-bottom: 12px; }
     .modal-body textarea { width: 100%; min-height: 120px; }
     .modal-body input { width: 100%; }
     .pill { display: inline-block; padding: 2px 8px; border-radius: 999px; background: #f3f3f3; font-size: 12px; margin-left: 6px; }
   </style>
 </head>
 <body>
-  <div class="page">
+  <div class="page container py-4">
     <div class="page-header">
       <div>
         <h1>Sub-agent Router</h1>
         <div class="muted">Admin UI</div>
       </div>
-      <div class="status-badge">Local</div>
+      <span class="badge text-bg-primary-subtle border border-primary-subtle">Local</span>
     </div>
 
-    <nav class="tabs">
-      <button class="tab-btn is-active" data-tab="model">模型</button>
-      <button class="tab-btn" data-tab="mcp">MCP</button>
-      <button class="tab-btn" data-tab="marketplace">Marketplace</button>
+    <nav class="tabs main-tabs btn-group" role="tablist">
+      <button class="btn btn-outline-primary tab-btn active" data-tab="settings">设置</button>
+      <button class="btn btn-outline-primary tab-btn" data-tab="jobs">任务</button>
     </nav>
 
-    <div id="message" class="message" style="display:none"></div>
+    <div id="message" class="alert d-none" role="alert"></div>
 
-    <section id="tab-model" class="tab active">
-      <div class="grid-2">
-        <div class="card">
-          <div class="row">
-            <div class="section-title">模型列表</div>
-            <div class="table-wrap">
-              <table id="modelTable">
-                <thead>
-                  <tr><th>名称</th><th>Model</th><th>Base URL</th><th>推理</th><th>当前</th><th>操作</th></tr>
-                </thead>
-                <tbody></tbody>
-              </table>
+    <section id="tab-settings" class="tab active">
+      <nav class="tabs sub-tabs btn-group" role="tablist">
+        <button class="btn btn-outline-secondary tab-btn active" data-subtab="model">模型</button>
+        <button class="btn btn-outline-secondary tab-btn" data-subtab="mcp">MCP</button>
+        <button class="btn btn-outline-secondary tab-btn" data-subtab="marketplace">Marketplace</button>
+      </nav>
+
+      <section id="subtab-model" class="subtab active">
+        <div class="grid-2">
+          <div class="card">
+            <div class="field-row">
+              <div class="section-title">模型列表</div>
+              <div class="table-responsive">
+                <table id="modelTable" class="table table-sm table-hover align-middle">
+                  <thead>
+                    <tr><th>名称</th><th>Model</th><th>Base URL</th><th>推理</th><th>当前</th><th>操作</th></tr>
+                  </thead>
+                  <tbody></tbody>
+                </table>
+              </div>
+              <div class="inline">
+                <button id="modelAdd" class="btn btn-primary btn-sm">新增模型</button>
+              </div>
             </div>
-            <div class="inline">
-              <button id="modelAdd" class="ant-btn ant-btn-primary">新增模型</button>
+          </div>
+
+          <div class="card">
+            <div class="field-row">
+              <div class="section-title" id="modelFormTitle">新增/编辑模型</div>
+              <label>名称</label>
+              <input id="modelNameInput" class="form-control form-control-sm" placeholder="例如：Kimi / GPT" />
+              <label>API Key</label>
+              <input id="modelApiKeyInput" class="form-control form-control-sm" type="password" placeholder="sk-..." />
+              <div class="muted">仅保存在本地数据库中，不会上传。</div>
+            </div>
+            <div class="field-row">
+              <label>Base URL</label>
+              <input id="modelBaseUrlInput" class="form-control form-control-sm" placeholder="https://api.openai.com/v1" />
+            </div>
+            <div class="field-row">
+              <label>Model</label>
+              <input id="modelModelInput" class="form-control form-control-sm" placeholder="gpt-4o-mini / kimi-k2.5 / ..." />
+            </div>
+            <div class="field-row inline">
+              <label><input id="modelReasoningEnabled" type="checkbox" /> 启用推理</label>
+            </div>
+            <div class="field-row inline">
+              <button id="modelSave" class="btn btn-primary btn-sm">保存模型</button>
+              <button id="modelClear" class="btn btn-outline-secondary btn-sm">清空</button>
+            </div>
+          </div>
+
+          <div class="card">
+            <div class="field-row">
+              <div class="section-title">运行参数</div>
+              <label>AI Timeout (ms, 0=无限)</label>
+              <input id="aiTimeoutMs" class="form-control form-control-sm" placeholder="180000" />
+            </div>
+            <div class="field-row">
+              <label>AI Max Output Bytes (0=无限)</label>
+              <input id="aiMaxOutputBytes" class="form-control form-control-sm" placeholder="2097152" />
+            </div>
+            <div class="field-row">
+              <label>AI Tool Max Turns</label>
+              <input id="aiToolMaxTurns" class="form-control form-control-sm" placeholder="100" />
+            </div>
+            <div class="field-row">
+              <label>Command Timeout (ms, 0=无限)</label>
+              <input id="commandTimeoutMs" class="form-control form-control-sm" placeholder="120000" />
+            </div>
+            <div class="field-row">
+              <label>Command Max Output Bytes (0=无限)</label>
+              <input id="commandMaxOutputBytes" class="form-control form-control-sm" placeholder="1048576" />
+            </div>
+            <div class="field-row inline">
+              <button id="saveRuntime" class="btn btn-outline-secondary btn-sm">保存运行参数</button>
             </div>
           </div>
         </div>
+      </section>
 
-        <div class="card">
-          <div class="row">
-            <div class="section-title" id="modelFormTitle">新增/编辑模型</div>
-            <label>名称</label>
-            <input id="modelNameInput" class="ant-input" placeholder="例如：Kimi / GPT" />
-            <label>API Key</label>
-            <input id="modelApiKeyInput" class="ant-input" type="password" placeholder="sk-..." />
-            <div class="muted">仅保存在本地数据库中，不会上传。</div>
-          </div>
-          <div class="row">
-            <label>Base URL</label>
-            <input id="modelBaseUrlInput" class="ant-input" placeholder="https://api.openai.com/v1" />
-          </div>
-          <div class="row">
-            <label>Model</label>
-            <input id="modelModelInput" class="ant-input" placeholder="gpt-4o-mini / kimi-k2.5 / ..." />
-          </div>
-          <div class="row inline">
-            <label><input id="modelReasoningEnabled" type="checkbox" /> 启用推理</label>
-          </div>
-          <div class="row inline">
-            <button id="modelSave" class="ant-btn ant-btn-primary">保存模型</button>
-            <button id="modelClear" class="ant-btn">清空</button>
-          </div>
-        </div>
-
-        <div class="card">
-          <div class="row">
-            <div class="section-title">运行参数</div>
-            <label>AI Timeout (ms, 0=无限)</label>
-            <input id="aiTimeoutMs" class="ant-input" placeholder="180000" />
-          </div>
-          <div class="row">
-            <label>AI Max Output Bytes (0=无限)</label>
-            <input id="aiMaxOutputBytes" class="ant-input" placeholder="2097152" />
-          </div>
-          <div class="row">
-            <label>AI Tool Max Turns</label>
-            <input id="aiToolMaxTurns" class="ant-input" placeholder="100" />
-          </div>
-          <div class="row">
-            <label>Command Timeout (ms, 0=无限)</label>
-            <input id="commandTimeoutMs" class="ant-input" placeholder="120000" />
-          </div>
-          <div class="row">
-            <label>Command Max Output Bytes (0=无限)</label>
-            <input id="commandMaxOutputBytes" class="ant-input" placeholder="1048576" />
-          </div>
-          <div class="row inline">
-            <button id="saveRuntime" class="ant-btn">保存运行参数</button>
-          </div>
-        </div>
-      </div>
-    </section>
-
-    <section id="tab-mcp" class="tab">
+      <section id="subtab-mcp" class="subtab">
       <div class="grid-1">
         <div class="card">
-          <div class="row">
+          <div class="field-row">
             <div class="section-title">MCP Allow Prefixes</div>
             <label>前缀（逗号分隔）</label>
-            <input id="allowPrefixes" class="ant-input" placeholder="mcp_task_manager_, mcp_filesystem_" />
+            <input id="allowPrefixes" class="form-control form-control-sm" placeholder="mcp_task_manager_, mcp_filesystem_" />
             <div class="inline">
-              <button id="saveAllow" class="ant-btn ant-btn-primary">保存</button>
+              <button id="saveAllow" class="btn btn-primary btn-sm">保存</button>
             </div>
             <div class="muted">用于提示子代理允许使用的 MCP 前缀（运行时只做提示约束）。</div>
           </div>
         </div>
 
         <div class="card">
-          <div class="row">
+          <div class="field-row">
             <div class="section-title">MCP Servers</div>
             <div class="muted">配置子代理可用的 MCP 服务（name + 协议 + cmd + args）。</div>
             <div class="inline">
-              <button id="mcpOpenModal" class="ant-btn ant-btn-primary">新增 MCP</button>
+              <button id="mcpOpenModal" class="btn btn-primary btn-sm">新增 MCP</button>
             </div>
-            <div class="table-wrap">
-              <table id="mcpTable">
+            <div class="table-responsive">
+              <table id="mcpTable" class="table table-sm table-hover align-middle">
                 <thead>
                   <tr><th>Name</th><th>协议</th><th>Target</th><th>配置</th><th>启用</th><th>操作</th></tr>
                 </thead>
@@ -522,61 +543,61 @@ function renderPage() {
           </div>
         </div>
       </div>
-    </section>
+      </section>
 
-    <section id="tab-marketplace" class="tab">
+      <section id="subtab-marketplace" class="subtab">
       <div class="grid-2">
         <div class="card">
-          <div class="row">
+          <div class="field-row">
             <div class="section-title">插件根目录</div>
             <label>Plugins Root（安装目录）</label>
-            <input id="pluginsRoot" class="ant-input" placeholder="/path/to/plugins" />
+            <input id="pluginsRoot" class="form-control form-control-sm" placeholder="/path/to/plugins" />
             <div class="muted">子代理可用插件的安装目录（用于加载 agents/skills/commands）。</div>
           </div>
-          <div class="row">
+          <div class="field-row">
             <label>Plugins Source Root（用于一键安装）</label>
-            <input id="pluginsSourceRoot" class="ant-input" placeholder="/path/to/source/subagents" />
+            <input id="pluginsSourceRoot" class="form-control form-control-sm" placeholder="/path/to/source/subagents" />
             <div class="muted">可指向本地完整 subagents 仓库，用于一键安装缺失插件。</div>
           </div>
-          <div class="row inline">
-            <button id="saveSettings" class="ant-btn ant-btn-primary">保存</button>
+          <div class="field-row inline">
+            <button id="saveSettings" class="btn btn-primary btn-sm">保存</button>
           </div>
         </div>
 
         <div class="card">
-          <div class="row">
+          <div class="field-row">
             <div class="section-title">系统路径</div>
             <label>Marketplace 路径（只读）</label>
-            <input id="marketplacePathInput" class="ant-input" readonly />
+            <input id="marketplacePathInput" class="form-control form-control-sm" readonly />
           </div>
-          <div class="row">
+          <div class="field-row">
             <label>Registry 路径（只读）</label>
-            <input id="registryPathInput" class="ant-input" readonly />
+            <input id="registryPathInput" class="form-control form-control-sm" readonly />
           </div>
-          <div class="row">
+          <div class="field-row">
             <label>DB 路径（只读）</label>
-            <input id="dbPathInput" class="ant-input" readonly />
+            <input id="dbPathInput" class="form-control form-control-sm" readonly />
           </div>
         </div>
       </div>
 
       <div class="grid-1">
         <div class="card">
-          <div class="row">
+          <div class="field-row">
             <div class="section-title">上传 marketplace.json</div>
-            <input type="file" id="marketplaceFile" class="ant-input" accept=".json" />
+            <input type="file" id="marketplaceFile" class="form-control form-control-sm" accept=".json" />
             <div class="inline">
-              <button id="uploadMarketplace" class="ant-btn ant-btn-primary">上传并激活</button>
+              <button id="uploadMarketplace" class="btn btn-primary btn-sm">上传并激活</button>
             </div>
             <div class="muted" id="marketplacePath"></div>
           </div>
         </div>
 
         <div class="card">
-          <div class="row">
+          <div class="field-row">
             <div class="section-title">已保存的 Marketplace</div>
-            <div class="table-wrap">
-              <table id="marketplaceStoreTable">
+            <div class="table-responsive">
+              <table id="marketplaceStoreTable" class="table table-sm table-hover align-middle">
                 <thead><tr><th>名称</th><th>插件数</th><th>创建时间</th><th>启用</th><th>操作</th></tr></thead>
                 <tbody></tbody>
               </table>
@@ -585,14 +606,14 @@ function renderPage() {
         </div>
 
         <div class="card">
-          <div class="row">
+          <div class="field-row">
             <div class="section-title">Marketplace 概览</div>
             <div class="inline">
-              <button id="installMissing" class="ant-btn ant-btn-primary">安装缺失插件</button>
+              <button id="installMissing" class="btn btn-primary btn-sm">安装缺失插件</button>
             </div>
             <div id="marketplaceSummary" class="muted"></div>
-            <div class="table-wrap">
-              <table id="pluginsTable">
+            <div class="table-responsive">
+              <table id="pluginsTable" class="table table-sm table-hover align-middle">
                 <thead><tr><th>插件</th><th>分类</th><th>Agents</th><th>Skills</th><th>Commands</th><th>状态</th><th>操作</th></tr></thead>
                 <tbody></tbody>
               </table>
@@ -601,9 +622,50 @@ function renderPage() {
         </div>
 
         <div class="card">
-          <div class="row">
+          <div class="field-row">
             <div class="section-title">插件详情</div>
             <div id="marketplaceDetails"></div>
+          </div>
+        </div>
+      </div>
+      </section>
+    </section>
+
+    <section id="tab-jobs" class="tab">
+      <div class="grid-1">
+        <div class="card">
+          <div class="field-row">
+            <div class="section-title">任务列表</div>
+            <div class="inline">
+              <input id="jobSessionFilter" class="form-control form-control-sm" placeholder="Session ID (留空=全部)" list="jobSessionList" />
+              <datalist id="jobSessionList"></datalist>
+              <select id="jobStatusFilter" class="form-select form-select-sm">
+                <option value="">状态: 全部</option>
+                <option value="queued">queued</option>
+                <option value="running">running</option>
+                <option value="done">done</option>
+                <option value="error">error</option>
+                <option value="cancelled">cancelled</option>
+              </select>
+              <label><input id="jobAllSessions" type="checkbox" checked /> 全部会话</label>
+              <button id="jobRefresh" class="btn btn-outline-secondary btn-sm">刷新</button>
+            </div>
+            <div class="table-responsive">
+              <table id="jobsTable" class="table table-sm table-hover align-middle">
+                <thead>
+                  <tr>
+                    <th>时间</th>
+                    <th>Session</th>
+                    <th>Agent</th>
+                    <th>Status</th>
+                    <th>Task</th>
+                    <th>Duration</th>
+                    <th>Error</th>
+                  </tr>
+                </thead>
+                <tbody></tbody>
+              </table>
+            </div>
           </div>
         </div>
       </div>
@@ -613,16 +675,16 @@ function renderPage() {
       <div class="modal-content card">
         <div class="modal-header">
           <h3 id="mcpModalTitle">新增 MCP</h3>
-          <button id="mcpCloseModal" class="ant-btn">关闭</button>
+          <button id="mcpCloseModal" class="btn btn-outline-secondary btn-sm">关闭</button>
         </div>
         <div class="modal-body">
-          <div class="row">
+          <div class="field-row">
             <label>名称</label>
-            <input id="mcpName" class="ant-input" placeholder="filesystem / task / lsp" />
+            <input id="mcpName" class="form-control form-control-sm" placeholder="filesystem / task / lsp" />
           </div>
-          <div class="row">
+          <div class="field-row">
             <label>协议</label>
-            <select id="mcpTransport" class="ant-select">
+            <select id="mcpTransport" class="form-select form-select-sm">
               <option value="stdio">stdio</option>
               <option value="sse">sse</option>
               <option value="http">http</option>
@@ -630,31 +692,31 @@ function renderPage() {
             <span class="pill" id="mcpTransportHint">stdio</span>
           </div>
           <div id="mcpStdioFields">
-            <div class="row">
+            <div class="field-row">
               <label>Cmd</label>
-              <input id="mcpCommand" class="ant-input" placeholder="node /path/server.js" />
+              <input id="mcpCommand" class="form-control form-control-sm" placeholder="node /path/server.js" />
             </div>
-            <div class="row">
+            <div class="field-row">
               <label>Args</label>
-              <textarea id="mcpArgs" class="ant-input" placeholder="--root /path/to/project&#10;--verbose"></textarea>
+              <textarea id="mcpArgs" class="form-control form-control-sm" placeholder="--root /path/to/project&#10;--verbose"></textarea>
             </div>
           </div>
           <div id="mcpHttpFields" style="display:none;">
-            <div class="row">
+            <div class="field-row">
               <label>Endpoint URL</label>
-              <input id="mcpEndpoint" class="ant-input" placeholder="http://127.0.0.1:8080/sse 或 http://127.0.0.1:8080/mcp" />
+              <input id="mcpEndpoint" class="form-control form-control-sm" placeholder="http://127.0.0.1:8080/sse 或 http://127.0.0.1:8080/mcp" />
             </div>
-            <div class="row">
+            <div class="field-row">
               <label>Headers (JSON)</label>
-              <textarea id="mcpHeaders" class="ant-input" placeholder='{"Authorization":"Bearer xxx"}'></textarea>
+              <textarea id="mcpHeaders" class="form-control form-control-sm" placeholder='{"Authorization":"Bearer xxx"}'></textarea>
             </div>
           </div>
-          <div class="row">
+          <div class="field-row">
             <label><input type="checkbox" id="mcpEnabled" checked /> 启用</label>
           </div>
-          <div class="row inline">
-            <button id="mcpSave" class="ant-btn ant-btn-primary">保存</button>
-            <button id="mcpClear" class="ant-btn">清空</button>
+          <div class="field-row inline">
+            <button id="mcpSave" class="btn btn-primary btn-sm">保存</button>
+            <button id="mcpClear" class="btn btn-outline-secondary btn-sm">清空</button>
           </div>
         </div>
       </div>
@@ -662,28 +724,44 @@ function renderPage() {
   </div>
 
   <script>
-    const tabs = document.querySelectorAll('nav.tabs button');
-    tabs.forEach(btn => btn.addEventListener('click', () => {
+    const mainTabs = document.querySelectorAll('nav.tabs.main-tabs .tab-btn');
+    mainTabs.forEach(btn => btn.addEventListener('click', () => {
+      const target = btn.dataset.tab;
+      if (!target) return;
       document.querySelectorAll('.tab').forEach(tab => tab.classList.remove('active'));
-      document.getElementById('tab-' + btn.dataset.tab).classList.add('active');
-      tabs.forEach(node => {
-        node.classList.remove('is-active');
+      const section = document.getElementById('tab-' + target);
+      if (section) section.classList.add('active');
+      mainTabs.forEach(node => {
+        node.classList.remove('active');
       });
-      btn.classList.add('is-active');
+      btn.classList.add('active');
+    }));
+
+    const subTabs = document.querySelectorAll('nav.tabs.sub-tabs .tab-btn');
+    subTabs.forEach(btn => btn.addEventListener('click', () => {
+      const target = btn.dataset.subtab;
+      if (!target) return;
+      document.querySelectorAll('.subtab').forEach(tab => tab.classList.remove('active'));
+      const section = document.getElementById('subtab-' + target);
+      if (section) section.classList.add('active');
+      subTabs.forEach(node => {
+        node.classList.remove('active');
+      });
+      btn.classList.add('active');
     }));
 
     function showMessage(text, kind) {
       const box = document.getElementById('message');
       if (!box) return;
       if (!text) {
-        box.style.display = 'none';
+        box.classList.add('d-none');
         box.textContent = '';
-        box.className = 'message';
+        box.className = 'alert d-none';
         return;
       }
       box.textContent = text;
-      box.className = 'message ' + (kind || 'success');
-      box.style.display = 'block';
+      const tone = kind === 'error' ? 'danger' : 'success';
+      box.className = 'alert alert-' + tone;
     }
 
     async function fetchStatus() {
@@ -716,10 +794,97 @@ function renderPage() {
           '<td>' + item.createdAt + '</td>' +
           '<td><input type="checkbox" data-toggle-marketplace="' + item.id + '" ' + enabled + ' /></td>' +
           '<td>' +
-          '<button class="ant-btn" data-del="' + item.id + '">删除</button>' +
+          '<button class="btn btn-outline-danger btn-sm" data-del="' + item.id + '">删除</button>' +
           '</td>';
         body.appendChild(tr);
       });
+    }
+
+    let jobs = [];
+    let jobSessions = [];
+
+    function parseJsonSafe(text) {
+      if (!text) return null;
+      try { return JSON.parse(text); } catch { return null; }
+    }
+
+    function formatDuration(ms) {
+      const num = Number(ms);
+      if (!Number.isFinite(num) || num <= 0) return '';
+      if (num < 1000) return num + ' ms';
+      const sec = (num / 1000).toFixed(2);
+      return sec + ' s';
+    }
+
+    function formatTime(iso) {
+      if (!iso) return '';
+      return String(iso).replace('T', ' ').replace('Z', '');
+    }
+
+    function renderJobSessions() {
+      const list = document.getElementById('jobSessionList');
+      if (!list) return;
+      list.innerHTML = '';
+      jobSessions.forEach(item => {
+        const opt = document.createElement('option');
+        opt.value = item.sessionId || '';
+        opt.label = (item.sessionId || '') + ' (' + item.count + ')';
+        list.appendChild(opt);
+      });
+    }
+
+    async function fetchJobSessions() {
+      const res = await fetch('/api/job_sessions');
+      const data = await res.json();
+      jobSessions = Array.isArray(data.sessions) ? data.sessions : [];
+      renderJobSessions();
+    }
+
+    function renderJobs() {
+      const body = document.querySelector('#jobsTable tbody');
+      if (!body) return;
+      body.innerHTML = '';
+      jobs.forEach(job => {
+        const result = parseJsonSafe(job.resultJson);
+        const duration = result && result.duration_ms ? formatDuration(result.duration_ms) : '';
+        const errorText = job.error || (result && result.error) || '';
+        const status = job.status || '';
+        const tr = document.createElement('tr');
+        tr.innerHTML =
+          '<td>' + formatTime(job.createdAt) + '</td>' +
+          '<td>' + (job.sessionId || '') + '</td>' +
+          '<td>' + (job.agentId || '') + '</td>' +
+          '<td>' + status + '</td>' +
+          '<td>' + String(job.task || '').slice(0, 120) + '</td>' +
+          '<td>' + duration + '</td>' +
+          '<td>' + (errorText ? String(errorText).slice(0, 120) : '') + '</td>';
+        body.appendChild(tr);
+      });
+    }
+
+    function updateJobSessionState() {
+      const allSessions = document.getElementById('jobAllSessions');
+      const sessionInput = document.getElementById('jobSessionFilter');
+      if (!allSessions || !sessionInput) return;
+      sessionInput.disabled = allSessions.checked;
+    }
+
+    async function fetchJobs() {
+      const sessionInput = document.getElementById('jobSessionFilter');
+      const statusSelect = document.getElementById('jobStatusFilter');
+      const allSessionsToggle = document.getElementById('jobAllSessions');
+      const sessionId = sessionInput ? sessionInput.value.trim() : '';
+      const status = statusSelect ? statusSelect.value : '';
+      const allSessions = allSessionsToggle ? allSessionsToggle.checked : false;
+      const params = new URLSearchParams();
+      if (allSessions) params.set('all_sessions', '1');
+      if (!allSessions && sessionId) params.set('session_id', sessionId);
+      if (status) params.set('status', status);
+      const qs = params.toString();
+      const res = await fetch('/api/jobs' + (qs ? '?' + qs : ''));
+      const data = await res.json();
+      jobs = Array.isArray(data.jobs) ? data.jobs : [];
+      renderJobs();
     }
 
     function valueOrEmpty(value) {
@@ -768,15 +933,15 @@ function renderPage() {
         const tr = document.createElement('tr');
         const reasoning = entry.reasoning_enabled ? '开' : '关';
         const active = entry.id === activeModelId;
-        const activeCell = active ? '<span class="badge">当前</span>' : '<button class="ant-btn" data-activate="' + entry.id + '">设为当前</button>';
+        const activeCell = active ? '<span class="badge text-bg-primary">当前</span>' : '<button class="btn btn-outline-primary btn-sm" data-activate="' + entry.id + '">设为当前</button>';
         tr.innerHTML = '<td>' + entry.name + '</td>' +
           '<td>' + entry.model + '</td>' +
           '<td>' + entry.base_url + '</td>' +
           '<td>' + reasoning + '</td>' +
           '<td>' + activeCell + '</td>' +
           '<td>' +
-          '<button class="ant-btn" data-model-edit="' + entry.id + '">编辑</button>' +
-          '<button class="ant-btn" data-model-del="' + entry.id + '">删除</button>' +
+          '<button class="btn btn-outline-secondary btn-sm" data-model-edit="' + entry.id + '">编辑</button>' +
+          '<button class="btn btn-outline-danger btn-sm" data-model-del="' + entry.id + '">删除</button>' +
           '</td>';
         body.appendChild(tr);
       });
@@ -842,8 +1007,8 @@ function renderPage() {
           '<td>' + configText + '</td>' +
           '<td><input type="checkbox" data-toggle="' + entry.id + '" ' + enabled + ' /></td>' +
           '<td>' +
-          '<button class="ant-btn" data-edit="' + entry.id + '">编辑</button>' +
-          '<button class="ant-btn" data-del="' + entry.id + '">删除</button>' +
+          '<button class="btn btn-outline-secondary btn-sm" data-edit="' + entry.id + '">编辑</button>' +
+          '<button class="btn btn-outline-danger btn-sm" data-del="' + entry.id + '">删除</button>' +
           '</td>';
         body.appendChild(tr);
       });
@@ -872,6 +1037,20 @@ function renderPage() {
         body: JSON.stringify({ prefixes })
       });
       await fetchStatus();
+    };
+
+    document.getElementById('jobRefresh').onclick = async () => {
+      await fetchJobs();
+    };
+    document.getElementById('jobStatusFilter').onchange = async () => {
+      await fetchJobs();
+    };
+    document.getElementById('jobSessionFilter').onchange = async () => {
+      await fetchJobs();
+    };
+    document.getElementById('jobAllSessions').onchange = async () => {
+      updateJobSessionState();
+      await fetchJobs();
     };
 
     document.getElementById('saveSettings').onclick = async () => {
@@ -1213,16 +1392,16 @@ function renderPage() {
       if (!data || !data.plugins) return;
       const summary = document.getElementById('marketplaceSummary');
       summary.innerHTML = [
-        '<span class="badge">Agents: ' + data.counts.agents.available + '/' + data.counts.agents.total + '</span>',
-        '<span class="badge">Skills: ' + data.counts.skills.available + '/' + data.counts.skills.total + '</span>',
-        '<span class="badge">Commands: ' + data.counts.commands.available + '/' + data.counts.commands.total + '</span>'
+        '<span class="badge text-bg-secondary">Agents: ' + data.counts.agents.available + '/' + data.counts.agents.total + '</span>',
+        '<span class="badge text-bg-secondary">Skills: ' + data.counts.skills.available + '/' + data.counts.skills.total + '</span>',
+        '<span class="badge text-bg-secondary">Commands: ' + data.counts.commands.available + '/' + data.counts.commands.total + '</span>'
       ].join(' ');
       const tbody = document.querySelector('#pluginsTable tbody');
       tbody.innerHTML = '';
       data.plugins.forEach(plugin => {
         const tr = document.createElement('tr');
         const status = plugin.exists ? '可用' : '<span class="missing">缺失</span>';
-        const installBtn = plugin.exists ? '' : '<button class="ant-btn ant-btn-primary" data-install="' + plugin.source + '">一键安装</button>';
+        const installBtn = plugin.exists ? '' : '<button class="btn btn-primary btn-sm" data-install="' + plugin.source + '">一键安装</button>';
         tr.innerHTML = '<td>' + plugin.name + '</td>' +
           '<td>' + (plugin.category || '') + '</td>' +
           '<td>' + plugin.counts.agents.available + '/' + plugin.counts.agents.total + '</td>' +
@@ -1261,6 +1440,9 @@ function renderPage() {
     fetchStatus();
     fetchSummary();
     fetchMcpServers();
+    fetchJobSessions();
+    updateJobSessionState();
+    fetchJobs();
     setMcpForm(null);
   </script>
 </body>

@@ -23,6 +23,8 @@ if (args.help || args.h) {
   process.exit(0);
 }
 
+const ONE_DAY_MS = 24 * 60 * 60 * 1000;
+
 const serverName = normalizeName(String(args.name || 'sub_agent_router'));
 const sessionIdArg = normalizeId(args['session-id'] || args.session);
 const runIdArg = normalizeId(args['run-id'] || args.run);
@@ -62,7 +64,7 @@ const pluginsRoot =
 const timeoutMs =
   parseNumber(args['timeout-ms']) ||
   parseNumber(process.env.SUBAGENT_TIMEOUT_MS) ||
-  120000;
+  ONE_DAY_MS;
 
 const maxOutputBytes =
   parseNumber(args['max-output-bytes']) ||
@@ -72,7 +74,7 @@ const maxOutputBytes =
 const llmTimeoutMs =
   parseNumber(args['llm-timeout-ms']) ||
   parseNumber(process.env.SUBAGENT_LLM_TIMEOUT_MS) ||
-  180000;
+  ONE_DAY_MS;
 
 const llmMaxOutputBytes =
   parseNumber(args['llm-max-output-bytes']) ||
@@ -159,9 +161,9 @@ Options:
   --plugins-root <path>   Root to resolve marketplace plugin sources
   --session-id <id>       Session ID override (optional; default generated)
   --run-id <id>           Run ID override (optional)
-  --timeout-ms <ms>       Command timeout in milliseconds (default 120000)
+  --timeout-ms <ms>       Command timeout in milliseconds (default 86400000)
   --max-output-bytes <n>  Max stdout/stderr capture per stream (default 1048576)
-  --llm-timeout-ms <ms>   AI command timeout (default 180000)
+  --llm-timeout-ms <ms>   AI command timeout (default 86400000)
   --llm-max-output-bytes  AI max stdout/stderr bytes (default 2097152)
   --admin-port <n>        Enable admin config UI on this port
   --admin-host <host>     Admin UI host (default 127.0.0.1)

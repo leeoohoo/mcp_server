@@ -3,6 +3,16 @@ import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js'
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 import { McpServerConfig } from './types.js';
 
+const MAX_MCP_REQUEST_TIMEOUT_MS = 2_147_483_647;
+const MCP_REQUEST_TIMEOUT_MS = (() => {
+  const raw = Number(process.env.SUBAGENT_MCP_REQUEST_TIMEOUT_MS);
+  if (Number.isFinite(raw)) {
+    if (raw <= 0) return MAX_MCP_REQUEST_TIMEOUT_MS;
+    return raw;
+  }
+  return 24 * 60 * 60 * 1000;
+})();
+
 export interface McpToolDefinition {
   name: string;
   description?: string;
@@ -30,6 +40,7 @@ export async function createMcpToolSession(options: {
   allowPrefixes?: string[];
   clientName?: string;
   clientVersion?: string;
+  signal?: AbortSignal;
 }): Promise<McpToolSession | null> {
   const servers = Array.isArray(options.servers) ? options.servers.filter((s) => s.enabled) : [];
   if (servers.length === 0) return null;
@@ -105,11 +116,23 @@ export async function createMcpToolSession(options: {
         error: `Tool not found: ${toolName}`,
       });
     }
+    if (options.signal?.aborted) {
+      return JSON.stringify({
+        ok: false,
+        server_id: entry.serverId,
+        server_name: entry.serverName,
+        tool: entry.rawToolName,
+        error: 'aborted',
+      });
+    }
     try {
+      const requestOptions = options.signal
+        ? { timeout: MCP_REQUEST_TIMEOUT_MS, signal: options.signal }
+        : { timeout: MCP_REQUEST_TIMEOUT_MS };
       const result = await entry.client.callTool({
         name: entry.rawToolName,
         arguments: args,
-      });
+      }, undefined, requestOptions);
       const contentText = extractToolText(result);
       return JSON.stringify({
         ok: !result.isError,

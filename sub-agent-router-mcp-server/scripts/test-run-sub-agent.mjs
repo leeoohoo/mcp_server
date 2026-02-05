@@ -111,9 +111,9 @@ const pluginsRoot =
   normalizeId(process.env.SUBAGENT_PLUGINS_ROOT) ||
   path.join(stateDir, 'plugins');
 
-const timeoutMs = parseNumber(process.env.SUBAGENT_TIMEOUT_MS) || 120000;
+const timeoutMs = parseNumber(process.env.SUBAGENT_TIMEOUT_MS) || 24 * 60 * 60 * 1000;
 const maxOutputBytes = parseNumber(process.env.SUBAGENT_MAX_OUTPUT_BYTES) || 1024 * 1024;
-const llmTimeoutMs = parseNumber(process.env.SUBAGENT_LLM_TIMEOUT_MS) || 180000;
+const llmTimeoutMs = parseNumber(process.env.SUBAGENT_LLM_TIMEOUT_MS) || 24 * 60 * 60 * 1000;
 const llmMaxOutputBytes = parseNumber(process.env.SUBAGENT_LLM_MAX_OUTPUT_BYTES) || 2 * 1024 * 1024;
 
 ensureDir(path.dirname(registryPath));

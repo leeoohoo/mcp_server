@@ -20,6 +20,7 @@ export interface RunContext {
 export interface RunOptions {
   timeoutMs?: number;
   maxOutputBytes?: number;
+  signal?: AbortSignal;
 }
 
 export interface RunResult {
@@ -70,6 +71,7 @@ export function spawnCommand(spec: CommandSpec, context: RunContext, options: Ru
   };
 
   const startedAt = new Date().toISOString();
+  const abortSignal = options.signal;
   const child = spawn(command, args, {
     cwd: spec.cwd || process.cwd(),
     env,
@@ -127,12 +129,37 @@ export function spawnCommand(spec: CommandSpec, context: RunContext, options: Ru
       }, timeoutMs);
     }
 
+    const handleAbort = () => {
+      errorMessage = errorMessage || 'aborted';
+      try {
+        child.kill('SIGTERM');
+      } catch {}
+      setTimeout(() => {
+        try {
+          child.kill('SIGKILL');
+        } catch {}
+      }, 2000);
+    };
+
+    if (abortSignal) {
+      if (abortSignal.aborted) {
+        handleAbort();
+      } else {
+        abortSignal.addEventListener('abort', handleAbort, { once: true });
+      }
+    }
+
     child.on('error', (err) => {
       errorMessage = err?.message || 'spawn error';
     });
 
     child.on('close', (code, signal) => {
       if (timeout) clearTimeout(timeout);
+      if (abortSignal) {
+        try {
+          abortSignal.removeEventListener('abort', handleAbort);
+        } catch {}
+      }
       const finishedAt = new Date().toISOString();
       const durationMs = Date.now() - Date.parse(startedAt);
       resolve({
@@ -199,6 +226,7 @@ export async function runCommandWithInput(
   const timeoutMs = typeof options.timeoutMs === 'number' ? options.timeoutMs : 120000;
   const maxOutputBytes = normalizeMaxOutputBytes(options.maxOutputBytes, 1024 * 1024);
   const startedAt = new Date().toISOString();
+  const abortSignal = options.signal;
   const child = spawn(cmd, args, {
     cwd: process.cwd(),
     env: { ...process.env, ...env },
@@ -256,12 +284,37 @@ export async function runCommandWithInput(
       }, timeoutMs);
     }
 
+    const handleAbort = () => {
+      errorMessage = errorMessage || 'aborted';
+      try {
+        child.kill('SIGTERM');
+      } catch {}
+      setTimeout(() => {
+        try {
+          child.kill('SIGKILL');
+        } catch {}
+      }, 2000);
+    };
+
+    if (abortSignal) {
+      if (abortSignal.aborted) {
+        handleAbort();
+      } else {
+        abortSignal.addEventListener('abort', handleAbort, { once: true });
+      }
+    }
+
     child.on('error', (err) => {
       errorMessage = err?.message || 'spawn error';
     });
 
     child.on('close', (code, signal) => {
       if (timeout) clearTimeout(timeout);
+      if (abortSignal) {
+        try {
+          abortSignal.removeEventListener('abort', handleAbort);
+        } catch {}
+      }
       const finishedAt = new Date().toISOString();
       const durationMs = Date.now() - Date.parse(startedAt);
       resolve({
@@ -301,6 +354,7 @@ export function spawnCommandWithInput(
   const timeoutMs = typeof options.timeoutMs === 'number' ? options.timeoutMs : 120000;
   const maxOutputBytes = normalizeMaxOutputBytes(options.maxOutputBytes, 1024 * 1024);
   const startedAt = new Date().toISOString();
+  const abortSignal = options.signal;
   const child = spawn(cmd, args, {
     cwd: process.cwd(),
     env: { ...process.env, ...env },
@@ -358,12 +412,37 @@ export function spawnCommandWithInput(
       }, timeoutMs);
     }
 
+    const handleAbort = () => {
+      errorMessage = errorMessage || 'aborted';
+      try {
+        child.kill('SIGTERM');
+      } catch {}
+      setTimeout(() => {
+        try {
+          child.kill('SIGKILL');
+        } catch {}
+      }, 2000);
+    };
+
+    if (abortSignal) {
+      if (abortSignal.aborted) {
+        handleAbort();
+      } else {
+        abortSignal.addEventListener('abort', handleAbort, { once: true });
+      }
+    }
+
     child.on('error', (err) => {
       errorMessage = err?.message || 'spawn error';
     });
 
     child.on('close', (code, signal) => {
       if (timeout) clearTimeout(timeout);
+      if (abortSignal) {
+        try {
+          abortSignal.removeEventListener('abort', handleAbort);
+        } catch {}
+      }
       const finishedAt = new Date().toISOString();
       const durationMs = Date.now() - Date.parse(startedAt);
       resolve({

@@ -78,7 +78,8 @@ export function createSubAgentRouterServer(options: ServerOptions) {
         command_id: z.string().optional(),
       }),
     },
-    async ({ task, category, skills, query, command_id }) => {
+    async ({ task, category, skills, query, command_id }, extra) => {
+      const abortSignal = extra?.signal;
       const agents = catalog.listAgents();
       if (agents.length === 0) {
         return textResult(withChatos(serverName, 'suggest_sub_agent', {
@@ -107,6 +108,7 @@ export function createSubAgentRouterServer(options: ServerOptions) {
           category,
           skills,
           query,
+          signal: abortSignal,
         });
       }
 
@@ -160,7 +162,8 @@ export function createSubAgentRouterServer(options: ServerOptions) {
         mcp_allow_prefixes: z.array(z.string()).optional(),
       }),
     },
-    async (input) => {
+    async (input, extra) => {
+      const abortSignal = extra?.signal;
       const resolved = resolveAgentAndCommand(input, catalog);
       const { agent, command, usedSkills, reason } = resolved;
       if (!command && !agent.systemPromptPath) {
@@ -195,6 +198,7 @@ export function createSubAgentRouterServer(options: ServerOptions) {
         const run = spawnCommand(command, runContext, {
           timeoutMs: runtime.commandTimeoutMs,
           maxOutputBytes: runtime.commandMaxOutputBytes,
+          signal: abortSignal,
         });
         const result = await run.result;
         const status = result.error || result.timedOut || (result.exitCode ?? 0) !== 0 ? 'error' : 'ok';
@@ -231,6 +235,7 @@ export function createSubAgentRouterServer(options: ServerOptions) {
           allowPrefixes,
           clientName: serverName,
           clientVersion: '0.2.0',
+          signal: abortSignal,
         });
       } catch {
         toolSession = null;
@@ -255,14 +260,19 @@ export function createSubAgentRouterServer(options: ServerOptions) {
               tools: toolDefs,
               callTool: toolSession!.callTool,
               maxTurns: runtime.aiToolMaxTurns,
-            }
+            },
+            { signal: abortSignal }
           );
         } else {
-          result = await runAi(aiConfig, {
-            system: systemPrompt,
-            user: input.task,
-            meta: buildAiMeta(agent, command, runContext),
-          });
+          result = await runAi(
+            aiConfig,
+            {
+              system: systemPrompt,
+              user: input.task,
+              meta: buildAiMeta(agent, command, runContext),
+            },
+            { signal: abortSignal }
+          );
         }
       } finally {
         if (toolSession) {
@@ -292,261 +302,6 @@ export function createSubAgentRouterServer(options: ServerOptions) {
         timed_out: result.timedOut,
       };
       return textResult(withChatos(serverName, 'run_sub_agent', payload, status));
-    }
-  );
-
-  server.registerTool(
-    'start_sub_agent_async',
-    {
-      title: 'Start sub-agent (async)',
-      description: 'Start a sub-agent run asynchronously and return a job_id for polling.',
-      inputSchema: z.object({
-        task: z.string().min(1),
-        agent_id: z.string().optional(),
-        category: z.string().optional(),
-        skills: z.array(z.string()).optional(),
-        model: z.string().optional(),
-        caller_model: z.string().optional(),
-        query: z.string().optional(),
-        command_id: z.string().optional(),
-        mcp_allow_prefixes: z.array(z.string()).optional(),
-      }),
-    },
-    async (input) => {
-      const resolved = resolveAgentAndCommand(input, catalog);
-      const { agent, command, usedSkills, reason } = resolved;
-      if (!command && !agent.systemPromptPath) {
-        throw new Error(`Sub-agent ${agent.id} has no runnable prompt or command.`);
-      }
-      const job = jobStore.createJob({
-        task: input.task,
-        agentId: agent.id,
-        commandId: command?.id || null,
-        payload: input,
-      });
-      const runtime = resolveRuntimeConfig(configStore, {
-        commandTimeoutMs: timeoutMs,
-        commandMaxOutputBytes: maxOutputBytes,
-        aiTimeoutMs: ai.timeoutMs,
-        aiMaxOutputBytes: ai.maxOutputBytes,
-        aiToolMaxTurns: 100,
-      });
-      const mcpServers = configStore.listMcpServers().filter((entry) => entry.enabled);
-      const allowPrefixes = resolveAllowPrefixes(input.mcp_allow_prefixes, configStore, mcpServers);
-      const runContext = {
-        task: input.task,
-        agentId: agent.id,
-        commandId: command?.id || null,
-        skills: usedSkills.map((skill) => skill.id),
-        sessionId: defaultSessionId,
-        runId: defaultRunId,
-        category: agent.category,
-        query: input.query,
-        model: input.model,
-        callerModel: input.caller_model,
-        mcpAllowPrefixes: allowPrefixes,
-        mcpServers,
-      };
-
-      let run: ReturnType<typeof spawnCommand> | null = null;
-      try {
-        if (command?.exec) {
-          run = spawnCommand(command, runContext, {
-            timeoutMs: runtime.commandTimeoutMs,
-            maxOutputBytes: runtime.commandMaxOutputBytes,
-          });
-        } else {
-          const aiConfig = resolveAiConfig(ai, configStore, runtime);
-          ensureAiConfigured(aiConfig);
-          const systemPrompt = buildSystemPrompt(agent, usedSkills, command, catalog, allowPrefixes);
-          const prompt = buildPrompt(systemPrompt, input.task);
-          let toolSession: Awaited<ReturnType<typeof createMcpToolSession>> | null = null;
-          try {
-            toolSession = await createMcpToolSession({
-              servers: mcpServers,
-              allowPrefixes,
-              clientName: serverName,
-              clientVersion: '0.2.0',
-            });
-          } catch {
-            toolSession = null;
-          }
-          const useTools = !!toolSession && toolSession.tools.length > 0 && !!aiConfig.http && !aiConfig.command;
-          const resultPromise = (async () => {
-            if (useTools) {
-              const toolDefs = toolSession!.tools.map((tool) => ({
-                name: tool.name,
-                description: tool.description,
-                parameters: tool.parameters,
-              }));
-              return await runAiWithTools(
-                aiConfig,
-                {
-                  system: systemPrompt,
-                  user: input.task,
-                  meta: buildAiMeta(agent, command, runContext),
-                },
-                {
-                  tools: toolDefs,
-                  callTool: toolSession!.callTool,
-                  maxTurns: runtime.aiToolMaxTurns,
-                }
-              );
-            }
-            return await runAi(aiConfig, {
-              system: systemPrompt,
-              user: input.task,
-              meta: buildAiMeta(agent, command, runContext),
-            });
-          })().finally(async () => {
-            if (toolSession) {
-              try {
-                await toolSession.close();
-              } catch {}
-            }
-          });
-          run = {
-            child: createVirtualChild(),
-            startedAt: new Date().toISOString(),
-            result: resultPromise,
-          };
-        }
-      } catch (err) {
-        const message = err instanceof Error ? err.message : String(err);
-        jobStore.updateJobStatus(job.id, 'error', null, message);
-        jobStore.appendEvent(job.id, 'start_error', { error: message });
-        throw err;
-      }
-
-      if (run.child) {
-        inflight.set(job.id, run.child);
-      }
-      jobStore.updateJobStatus(job.id, 'running', null, null);
-      jobStore.appendEvent(job.id, 'start', { pid: run.child ? run.child.pid : null });
-      run.result
-        .then((result) => {
-          inflight.delete(job.id);
-          if (cancelled.has(job.id)) {
-            jobStore.appendEvent(job.id, 'finish_ignored', { status: 'cancelled' });
-            return;
-          }
-          const status = result.error || result.timedOut || (result.exitCode ?? 0) !== 0 ? 'error' : 'done';
-          const payload = {
-            status,
-            agent_id: agent.id,
-            agent_name: agent.name,
-            command_id: command?.id || null,
-            skills: runContext.skills,
-            reason,
-            response: command?.exec ? result.stdout : result.stdout.trim(),
-            stderr: result.stderr,
-            exit_code: result.exitCode,
-            signal: result.signal,
-            duration_ms: result.durationMs,
-            started_at: result.startedAt,
-            finished_at: result.finishedAt,
-            stdout_truncated: result.stdoutTruncated,
-            stderr_truncated: result.stderrTruncated,
-            error: result.error,
-            timed_out: result.timedOut,
-          };
-          jobStore.updateJobStatus(job.id, status, JSON.stringify(payload), result.error);
-          jobStore.appendEvent(job.id, 'finish', { status, exit_code: result.exitCode, signal: result.signal });
-        })
-        .catch((err) => {
-          inflight.delete(job.id);
-          if (cancelled.has(job.id)) {
-            jobStore.appendEvent(job.id, 'finish_ignored', { status: 'cancelled' });
-            return;
-          }
-          const message = err instanceof Error ? err.message : String(err);
-          jobStore.updateJobStatus(job.id, 'error', null, message);
-          jobStore.appendEvent(job.id, 'finish_error', { error: message });
-        });
-
-      return textResult(withChatos(serverName, 'start_sub_agent_async', {
-        job_id: job.id,
-        status: 'running',
-        agent_id: agent.id,
-        agent_name: agent.name,
-        command_id: command?.id || null,
-        skills: runContext.skills,
-        reason,
-      }));
-    }
-  );
-
-  server.registerTool(
-    'get_sub_agent_status',
-    {
-      title: 'Get async sub-agent status',
-      description: 'Poll async sub-agent job status.',
-      inputSchema: z.object({ job_id: z.string().min(1) }),
-    },
-    async ({ job_id }) => {
-      const job = jobStore.getJob(job_id);
-      if (!job) {
-        throw new Error(`Job ${job_id} not found.`);
-      }
-      if (job.sessionId !== defaultSessionId) {
-        throw new Error(`Job ${job_id} does not belong to current session.`);
-      }
-      const result = parseJson(job.resultJson);
-      return textResult(withChatos(serverName, 'get_sub_agent_status', {
-        job_id: job.id,
-        status: job.status,
-        agent_id: job.agentId,
-        command_id: job.commandId,
-        result,
-        error: job.error,
-        created_at: job.createdAt,
-        updated_at: job.updatedAt,
-      }));
-    }
-  );
-
-  server.registerTool(
-    'cancel_sub_agent_job',
-    {
-      title: 'Cancel async sub-agent job',
-      description: 'Cancel a running sub-agent job (best-effort).',
-      inputSchema: z.object({ job_id: z.string().min(1) }),
-    },
-    async ({ job_id }) => {
-      const job = jobStore.getJob(job_id);
-      if (!job) {
-        throw new Error(`Job ${job_id} not found.`);
-      }
-      if (job.sessionId !== defaultSessionId) {
-        throw new Error(`Job ${job_id} does not belong to current session.`);
-      }
-      if (job.status === 'done' || job.status === 'error' || job.status === 'cancelled') {
-        return textResult(withChatos(serverName, 'cancel_sub_agent_job', {
-          job_id: job.id,
-          status: job.status,
-          cancelled: false,
-        }));
-      }
-      cancelled.add(job.id);
-      const proc = inflight.get(job.id);
-      if (proc) {
-        try {
-          proc.kill('SIGTERM');
-        } catch {}
-        setTimeout(() => {
-          try {
-            if (!proc.killed) proc.kill('SIGKILL');
-          } catch {}
-        }, 2000);
-      }
-      jobStore.updateJobStatus(job.id, 'cancelled', job.resultJson, job.error);
-      jobStore.appendEvent(job.id, 'cancel', { pid: proc?.pid || null });
-      inflight.delete(job.id);
-      return textResult(withChatos(serverName, 'cancel_sub_agent_job', {
-        job_id: job.id,
-        status: 'cancelled',
-        cancelled: true,
-      }));
     }
   );
 
@@ -605,6 +360,7 @@ async function suggestWithAi(options: {
   category?: string;
   skills?: string[];
   query?: string;
+  signal?: AbortSignal;
 }): Promise<{ agentId: string; skills: string[]; reason: string } | null> {
   const list = options.agents.map((agent) => formatAgent(agent)).join('\n');
   const prompt = [
@@ -625,12 +381,16 @@ async function suggestWithAi(options: {
     .filter(Boolean)
     .join('\n');
 
-  const result = await runAi(options.ai, {
-    prompt,
-    meta: {
-      SUBAGENT_REQUEST: 'suggest',
+  const result = await runAi(
+    options.ai,
+    {
+      prompt,
+      meta: {
+        SUBAGENT_REQUEST: 'suggest',
+      },
     },
-  });
+    { signal: options.signal }
+  );
   const parsed = extractJson(result.stdout);
   if (!parsed) return null;
   const agentId = normalizeId(parsed.agent_id as string);

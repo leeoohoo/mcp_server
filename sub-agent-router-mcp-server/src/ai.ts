@@ -37,7 +37,11 @@ export interface AiToolingOptions {
   maxTurns?: number;
 }
 
-export async function runAi(config: AiConfig, input: AiRunInput): Promise<RunResult> {
+export async function runAi(
+  config: AiConfig,
+  input: AiRunInput,
+  options: { signal?: AbortSignal } = {}
+): Promise<RunResult> {
   const mode = config.command && config.command.length > 0 ? 'command' : 'http';
   logAiRequest(config, input, mode);
   let result: RunResult | null = null;
@@ -52,6 +56,7 @@ export async function runAi(config: AiConfig, input: AiRunInput): Promise<RunRes
         {
           timeoutMs: config.timeoutMs,
           maxOutputBytes,
+          signal: options.signal,
         }
       );
       logAiResponse(result, mode);
@@ -60,7 +65,7 @@ export async function runAi(config: AiConfig, input: AiRunInput): Promise<RunRes
     if (!config.http || !config.http.apiKey || !config.http.model) {
       throw new Error('AI command is not configured');
     }
-    result = await runOpenAiSdk(config.http, input, config.timeoutMs, maxOutputBytes);
+    result = await runOpenAiSdk(config.http, input, config.timeoutMs, maxOutputBytes, options.signal);
     logAiResponse(result, mode);
     return result;
   } catch (err) {
@@ -72,7 +77,8 @@ export async function runAi(config: AiConfig, input: AiRunInput): Promise<RunRes
 export async function runAiWithTools(
   config: AiConfig,
   input: AiRunInput,
-  options: AiToolingOptions
+  options: AiToolingOptions,
+  runOptions: { signal?: AbortSignal } = {}
 ): Promise<RunResult> {
   if (config.command && config.command.length > 0) {
     throw new Error('AI tool calling is not supported in command mode');
@@ -85,18 +91,32 @@ export async function runAiWithTools(
   const maxOutputBytes = normalizeMaxOutputBytes(config.maxOutputBytes);
   const controller = new AbortController();
   let timedOut = false;
+  let aborted = false;
   let timeout: NodeJS.Timeout | null = null;
+  const externalSignal = runOptions.signal;
   if (config.timeoutMs > 0) {
     timeout = setTimeout(() => {
       timedOut = true;
       controller.abort();
     }, config.timeoutMs);
   }
+  const handleAbort = () => {
+    aborted = true;
+    controller.abort(externalSignal?.reason);
+  };
+  if (externalSignal) {
+    if (externalSignal.aborted) {
+      handleAbort();
+    } else {
+      externalSignal.addEventListener('abort', handleAbort, { once: true });
+    }
+  }
 
   const baseURL = normalizeBaseUrl(config.http.baseUrl);
   const client = new OpenAI({
     apiKey: config.http.apiKey,
     baseURL: baseURL || undefined,
+    timeout: resolveClientTimeout(config.timeoutMs),
   });
 
   const messages: Array<Record<string, unknown>> = buildMessages(input);
@@ -196,11 +216,20 @@ export async function runAiWithTools(
     }
   } catch (err) {
     if (!timedOut) {
-      error = err instanceof Error ? err.message : String(err);
+      if (aborted) {
+        error = 'aborted';
+      } else {
+        error = err instanceof Error ? err.message : String(err);
+      }
       exitCode = 1;
     }
   } finally {
     if (timeout) clearTimeout(timeout);
+    if (externalSignal) {
+      try {
+        externalSignal.removeEventListener('abort', handleAbort);
+      } catch {}
+    }
   }
 
   if (stderr.length > maxOutputBytes) {
@@ -243,17 +272,31 @@ async function runOpenAiSdk(
   http: AiHttpConfig,
   input: AiRunInput,
   timeoutMs: number,
-  maxOutputBytes: number
+  maxOutputBytes: number,
+  signal?: AbortSignal
 ): Promise<RunResult> {
   const startedAt = new Date().toISOString();
   const controller = new AbortController();
   let timedOut = false;
+  let aborted = false;
   let timeout: NodeJS.Timeout | null = null;
+  const externalSignal = signal;
   if (timeoutMs > 0) {
     timeout = setTimeout(() => {
       timedOut = true;
       controller.abort();
     }, timeoutMs);
+  }
+  const handleAbort = () => {
+    aborted = true;
+    controller.abort(externalSignal?.reason);
+  };
+  if (externalSignal) {
+    if (externalSignal.aborted) {
+      handleAbort();
+    } else {
+      externalSignal.addEventListener('abort', handleAbort, { once: true });
+    }
   }
   let stdout = '';
   let stderr = '';
@@ -267,6 +310,7 @@ async function runOpenAiSdk(
     const client = new OpenAI({
       apiKey: http.apiKey,
       baseURL: baseURL || undefined,
+      timeout: resolveClientTimeout(timeoutMs),
     });
     const messages = buildMessages(input);
     const request = applyReasoningSettings(http, {
@@ -291,11 +335,20 @@ async function runOpenAiSdk(
     }
   } catch (err) {
     if (!abortedForTruncation) {
-      error = err instanceof Error ? err.message : String(err);
+      if (aborted) {
+        error = 'aborted';
+      } else {
+        error = err instanceof Error ? err.message : String(err);
+      }
       exitCode = 1;
     }
   } finally {
     if (timeout) clearTimeout(timeout);
+    if (externalSignal) {
+      try {
+        externalSignal.removeEventListener('abort', handleAbort);
+      } catch {}
+    }
   }
   if (stdout.length > maxOutputBytes) {
     stdout = stdout.slice(0, maxOutputBytes);
@@ -359,6 +412,14 @@ function normalizeMaxOutputBytes(value: number): number {
   if (value <= 0) return Number.POSITIVE_INFINITY;
   return value;
 }
+
+function resolveClientTimeout(timeoutMs: number): number {
+  if (!Number.isFinite(timeoutMs)) return MAX_CLIENT_TIMEOUT_MS;
+  if (timeoutMs <= 0) return MAX_CLIENT_TIMEOUT_MS;
+  return Math.max(0, Math.trunc(timeoutMs));
+}
+
+const MAX_CLIENT_TIMEOUT_MS = 2_147_483_647;
 
 function applyReasoningSettings(http: AiHttpConfig, request: Record<string, unknown>): Record<string, unknown> {
   if (!http) return request;

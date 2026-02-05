@@ -388,8 +388,10 @@ function renderPage() {
       --app-bg: #f6f7fb;
       --app-muted: #64748b;
     }
+    * { box-sizing: border-box; }
+    html, body { height: 100%; overflow: hidden; }
     body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; margin: 0; background: var(--app-bg); color: #0f172a; }
-    .page { width: 100%; max-width: none; padding: 24px; }
+    .page { width: 100%; height: 100vh; max-width: none; padding: 24px; display: flex; flex-direction: column; overflow: hidden; }
     @media (max-width: 768px) { .page { padding: 16px; } }
     .page-header { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-bottom: 16px; }
     h1 { font-size: 20px; margin: 0; }
@@ -429,9 +431,11 @@ function renderPage() {
     .drawer.active { display: flex; }
     .drawer-content { width: min(980px, 94vw); height: 100%; background: #fff; padding: 24px; overflow: auto; box-shadow: -12px 0 32px rgba(15, 23, 42, 0.2); }
     .drawer-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px; }
-    .jobs-board { align-items: start; grid-template-columns: minmax(260px, 360px) minmax(0, 1fr); }
+    #tab-jobs { flex: 1; display: flex; min-height: 0; overflow: hidden; }
+    .jobs-board { flex: 1; min-height: 0; overflow: hidden; align-items: stretch; grid-template-columns: minmax(260px, 360px) minmax(0, 1fr); }
     @media (max-width: 1100px) { .jobs-board { grid-template-columns: 1fr; } }
-    .jobs-list-card { max-height: 70vh; overflow: auto; }
+    .jobs-list-card { height: 100%; min-height: 0; overflow: auto; }
+    .job-detail-card { height: 100%; min-height: 0; overflow: auto; }
     .job-row { cursor: pointer; }
     .job-row.active { background: rgba(59, 130, 246, 0.12); }
     .code-block { background: #0f172a; color: #e2e8f0; padding: 12px; border-radius: 10px; font-size: 12px; white-space: pre-wrap; }
@@ -498,7 +502,7 @@ function renderPage() {
           </div>
         </div>
 
-        <div class="card">
+        <div class="card job-detail-card">
           <div class="field-row">
             <div class="section-title">任务详情</div>
             <div id="jobDetail" class="muted">选择任务查看执行过程。</div>
@@ -1020,7 +1024,6 @@ function renderPage() {
       const model = payload && payload.model ? ' · ' + payload.model : '';
       const toolName = payload && payload.tool ? ' · ' + payload.tool : '';
       const header = escapeHtml(label) + step + model + toolName;
-      const openByDefault = ev.type === 'tool_call' || ev.type === 'tool_result' || ev.type === 'ai_error' || ev.type === 'finish_error';
 
       let bodyHtml = '';
       if (!payload && !ev.payloadJson) {
@@ -1046,7 +1049,7 @@ function renderPage() {
       }
 
       return (
-        '<details class="timeline-item"' + (openByDefault ? ' open' : '') + '>' +
+        '<details class="timeline-item">' +
         '<summary>' +
         '<span class="timeline-dot"></span>' +
         '<span class="timeline-title">' + header + '</span>' +

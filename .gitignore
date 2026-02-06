@@ -24,4 +24,5 @@ build_resources/*.p12
 *.log
 tmp/
 
-
+/target/
+target/
